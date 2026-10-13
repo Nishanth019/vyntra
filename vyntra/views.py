@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
 from django.db import transaction
@@ -16,6 +18,7 @@ from .models import (
     BusinessAdmin,
     BusinessType,
     DurationType,
+    GymMember,
     Member,
     MemberAttendance,
     Membership,
@@ -34,6 +37,7 @@ from .serializers import (
     BusinessTypeSerializer,
     DurationTypeSerializer,
     BusinessAccountQuerySerializer,
+    CollectionsQuerySerializer,
     LoginSerializer,
     MemberAttendanceDetailQuerySerializer,
     MemberAttendanceListQuerySerializer,
@@ -42,14 +46,25 @@ from .serializers import (
     MemberDetailQuerySerializer,
     MemberListQuerySerializer,
     MemberSerializer,
+    MembershipListQuerySerializer,
     MembershipPlanDetailQuerySerializer,
     MembershipPlanSerializer,
+    MembershipSerializer,
+    PaymentCreateSerializer,
+    PaymentDetailQuerySerializer,
+    PaymentDetailSerializer,
+    PaymentListQuerySerializer,
     SignupSerializer,
     StaffDetailQuerySerializer,
     StaffListQuerySerializer,
     StaffSerializer,
 )
-from .services import BusinessAccountService, BusinessAdminAuthService, MemberService
+from .services import (
+    BusinessAccountService,
+    BusinessAdminAuthService,
+    MemberService,
+    PaymentService,
+)
 
 
 def set_access_token_cookie(response, access_token):
@@ -217,6 +232,10 @@ class MemberView(APIView):
         if end_date_filters:
             members = members.filter(memberships__is_active=True, **end_date_filters)
 
+        if params.get("has_dues") is not None:
+            due_ids = MemberService.member_ids_with_dues(params["business_account_id"])
+            members = members.filter(id__in=due_ids) if params["has_dues"] else members.exclude(id__in=due_ids)
+
         paginator = PageNumberPagination()
         page = paginator.paginate_queryset(members, request, view=self)
         return paginator.get_paginated_response(MemberSerializer(page, many=True).data)
@@ -232,7 +251,9 @@ class MemberView(APIView):
         data = serializer.validated_data
         plan = data.pop("membership_plan_id")
         start_date = data.pop("start_date", timezone.localdate())
+        discount = data.pop("discount", Decimal("0"))
         payment = data.pop("payment", None)
+        gym_details = self.pop_gym_details(data)
 
         with transaction.atomic():
             member = Member.objects.create(
@@ -241,7 +262,8 @@ class MemberView(APIView):
                 created_by_business_admin=request.user,
                 is_active=True,
             )
-            membership = self.create_membership(member, plan, start_date)
+            self.upsert_gym_details(member, gym_details)
+            membership = self.create_membership(member, plan, start_date, discount)
             if payment:
                 self.create_payment(request, member, membership, payment)
 
@@ -257,15 +279,18 @@ class MemberView(APIView):
         serializer.is_valid(raise_exception=True)
         plan = serializer.validated_data.pop("membership_plan_id", None)
         start_date = serializer.validated_data.pop("start_date", timezone.localdate())
+        discount = serializer.validated_data.pop("discount", Decimal("0"))
         payment = serializer.validated_data.pop("payment", None)
+        gym_details = self.pop_gym_details(serializer.validated_data)
 
         with transaction.atomic():
             serializer.save()
+            self.upsert_gym_details(member, gym_details)
             # A different plan replaces the current active membership.
             membership = member.active_memberships[0] if member.active_memberships else None
             if plan and (membership is None or membership.membership_plan_id != plan.id):
                 Membership.objects.filter(member=member, is_active=True).update(is_active=False)
-                membership = self.create_membership(member, plan, start_date)
+                membership = self.create_membership(member, plan, start_date, discount)
             if payment:
                 self.create_payment(request, member, membership, payment)
 
@@ -290,7 +315,7 @@ class MemberView(APIView):
 
         return get_object_or_404(MemberService.get_members(params["business_account_id"]), id=params["member_id"])
 
-    def create_membership(self, member, plan, start_date):
+    def create_membership(self, member, plan, start_date, discount=Decimal("0")):
         return Membership.objects.create(
             business_account_id=member.business_account_id,
             member=member,
@@ -298,8 +323,18 @@ class MemberView(APIView):
             start_date=start_date,
             end_date=MemberService.calculate_end_date(start_date, plan),
             amount=plan.amount,
+            discount=discount,
             is_active=True,
         )
+
+    def pop_gym_details(self, data):
+        """Pull the gym_member (emergency contact / address) fields out of member data."""
+        keys = ["emergency_contact_name", "emergency_contact_phone", "emergency_contact_address"]
+        return {k: data.pop(k) for k in keys if k in data}
+
+    def upsert_gym_details(self, member, gym_details):
+        if gym_details:
+            GymMember.objects.update_or_create(member=member, defaults=gym_details)
 
     def create_payment(self, request, member, membership, payment):
         payment.setdefault("payment_date", timezone.now())
@@ -508,6 +543,115 @@ class MemberAttendanceView(APIView):
             id=params["attendance_id"],
             business_account_id=params["business_account_id"],
         )
+
+
+class PaymentView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if "payment_id" in request.query_params:
+            payment = self.get_payment(request)
+            return Response(PaymentDetailSerializer(payment).data)
+
+        query = PaymentListQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        params = query.validated_data
+        BusinessAccountService.check_admin_access(request.user, params["business_account_id"])
+
+        payments = (
+            Payment.objects.select_related("membership")
+            .filter(business_account_id=params["business_account_id"], is_active=True)
+            .order_by("-payment_date", "-id")
+        )
+        if params.get("member_id"):
+            payments = payments.filter(member_id=params["member_id"])
+        if params.get("payment_date_from"):
+            payments = payments.filter(payment_date__date__gte=params["payment_date_from"])
+        if params.get("payment_date_to"):
+            payments = payments.filter(payment_date__date__lte=params["payment_date_to"])
+
+        paginator = PageNumberPagination()
+        page = paginator.paginate_queryset(payments, request, view=self)
+        return paginator.get_paginated_response(PaymentDetailSerializer(page, many=True).data)
+
+    def post(self, request):
+        query = BusinessAccountQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        business_account_id = query.validated_data["business_account_id"]
+        BusinessAccountService.check_admin_access(request.user, business_account_id)
+
+        serializer = PaymentCreateSerializer(data=request.data, context={"business_account_id": business_account_id})
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        member = data.pop("member_id")
+        membership = data.pop("membership_id", None)
+        # Default to the member's current active membership so dues stay attributable.
+        if membership is None:
+            membership = Membership.objects.filter(member=member, is_active=True).order_by("-id").first()
+        data.setdefault("payment_date", timezone.now())
+
+        payment = Payment.objects.create(
+            **data,
+            business_account_id=business_account_id,
+            member=member,
+            membership=membership,
+            created_by_business_admin=request.user,
+            is_active=True,
+        )
+        return Response(PaymentDetailSerializer(payment).data, status=status.HTTP_201_CREATED)
+
+    def delete(self, request):
+        payment = self.get_payment(request)
+        payment.is_active = False
+        payment.save()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    def get_payment(self, request):
+        query = PaymentDetailQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        params = query.validated_data
+        BusinessAccountService.check_admin_access(request.user, params["business_account_id"])
+        return get_object_or_404(
+            Payment.objects.select_related("membership"),
+            id=params["payment_id"],
+            business_account_id=params["business_account_id"],
+        )
+
+
+class MembershipView(APIView):
+    """Full membership history (active + past) for a member, with payments and dues."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        query = MembershipListQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        params = query.validated_data
+        BusinessAccountService.check_admin_access(request.user, params["business_account_id"])
+
+        memberships = MemberService.get_memberships(params["business_account_id"], params["member_id"])
+        paginator = PageNumberPagination()
+        page = paginator.paginate_queryset(memberships, request, view=self)
+        return paginator.get_paginated_response(MembershipSerializer(page, many=True).data)
+
+
+class CollectionsView(APIView):
+    """Collection totals (today / this month / optional period) and outstanding dues."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        query = CollectionsQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        params = query.validated_data
+        BusinessAccountService.check_admin_access(request.user, params["business_account_id"])
+
+        summary = PaymentService.get_collections_summary(
+            params["business_account_id"],
+            period_from=params.get("period_from"),
+            period_to=params.get("period_to"),
+        )
+        return Response(summary)
 
 
 class AdminView(APIView):

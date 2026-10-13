@@ -162,6 +162,7 @@ class GymMember(TimeStampedModel):
 
     emergency_contact_name = models.CharField(max_length=200, null=True, blank=True)
     emergency_contact_phone = models.CharField(max_length=20, null=True, blank=True)
+    emergency_contact_address = models.CharField(max_length=500, null=True, blank=True)
 
     height_cm = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     weight_kg = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
@@ -284,6 +285,7 @@ class Membership(TimeStampedModel):
     end_date = models.DateField()
 
     amount = models.DecimalField(max_digits=12, decimal_places=2)
+    discount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
 
     is_active = models.BooleanField(default=True)
 

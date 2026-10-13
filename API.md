@@ -689,12 +689,15 @@ curl -X PUT "http://localhost:8084/api/v1/membership-plans/?business_account_id=
 ### Create member — `POST /members/?business_account_id=1`
 
 **Required:** `member_code` (unique within the business), `first_name`, `membership_plan_id` (an active plan of **this** business).
-**Optional:** `last_name`, `phone`, `email`, `date_of_birth`, `gender`, `start_date` (defaults to today), and `payment`.
+**Optional:** `last_name`, `phone`, `email`, `date_of_birth`, `gender`, `start_date` (defaults to today), `discount`, `payment`, and the gym-profile fields `emergency_contact_name`, `emergency_contact_phone`, `emergency_contact_address`.
 
 - **`payment`:** `amount` (> 0) and `payment_method` are required. `transaction_reference`, `notes` and `payment_date` (defaults to now) are optional.
-- **What gets created:** the member, a `membership`, and the payment if you sent one, all in one transaction.
+- **`discount`:** optional reduction on the membership (default `0`, can't exceed the plan amount). The membership then exposes `net_payable = amount − discount`, `amount_paid`, and `balance` (dues).
+- **Emergency fields** are stored on the member's gym profile and returned nested as `gym_details` (`null` if none were set).
+- **What gets created:** the member, a `membership`, the gym profile (if any emergency field was sent), and the payment if you sent one, all in one transaction.
 - **`end_date`** is worked out from the plan, counting `start_date` as day one.
 - **`amount`** on the membership is copied from the plan.
+- **Recurring payments & history:** record later payments via `POST /payments/` (§11); see all memberships via `GET /memberships/` (§10).
 
 ```bash
 curl -X POST "http://localhost:8084/api/v1/members/?business_account_id=1" \
@@ -863,6 +866,11 @@ curl -X GET "http://localhost:8084/api/v1/members/?business_account_id=1&search=
 ### List members by membership end date
 
 The example uses a wide range so it returns the sample member. For dashboard ranges, see the table above.
+
+> **Dues filter:** add `has_dues=true` to return only members whose active membership still has an
+> outstanding `balance` (dues pending), or `has_dues=false` for those fully paid up. Combine with the
+> other filters as usual. Member detail/list responses now also include `gym_details` (emergency
+> contact/address) and the membership's `discount` / `net_payable` / `amount_paid` / `balance`.
 
 ```bash
 curl -X GET "http://localhost:8084/api/v1/members/?business_account_id=1&end_date_from=2026-10-03&end_date_to=2026-11-12" \
@@ -1587,3 +1595,173 @@ curl -X PUT "http://localhost:8084/api/v1/admins/?business_account_id=1&admin_id
   "created_at": "2026-10-03T09:29:12.518435Z"
 }
 ```
+
+## 10. Memberships (history)
+
+A member's **full** membership history — the active one plus every past/renewed plan. (The member
+list/detail only ever show the single *active* membership; use this for history.) Newest first.
+Each membership carries its dues breakdown and its own payments.
+
+- **`amount`** — the plan price snapshot. **`discount`** — reduction applied at signup/renewal.
+- **`net_payable`** = `amount − discount`. **`amount_paid`** = Σ of this membership's payments.
+- **`balance`** = `net_payable − amount_paid` (the dues; negative means the member overpaid/credit).
+
+### List a member's memberships — `GET /memberships/?business_account_id=1&member_id=1`
+
+```bash
+curl -X GET "http://localhost:8084/api/v1/memberships/?business_account_id=1&member_id=1" \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response `200`**
+
+```json
+{
+  "count": 2,
+  "next": null,
+  "previous": null,
+  "results": [
+    {
+      "id": 2,
+      "membership_plan": {
+        "id": 2, "name": "Quarterly",
+        "duration_type": { "id": 2, "name": "Month", "code": "MONTH" },
+        "duration_value": 3, "amount": "5000.00", "description": "3 months", "is_active": true,
+        "created_at": "2026-10-03T09:29:12.278839Z", "updated_at": "2026-10-03T09:29:12.284987Z"
+      },
+      "start_date": "2026-11-03",
+      "end_date": "2027-02-02",
+      "amount": "5000.00",
+      "discount": "500.00",
+      "net_payable": "4500.00",
+      "amount_paid": "2000.00",
+      "balance": "2500.00",
+      "is_active": true,
+      "payments": [
+        {
+          "id": 3, "amount": "2000.00", "payment_date": "2026-11-03T06:00:00Z",
+          "payment_method": "CASH", "transaction_reference": null, "notes": "Part payment",
+          "created_at": "2026-11-03T06:00:00Z"
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "membership_plan": {
+        "id": 1, "name": "Monthly",
+        "duration_type": { "id": 2, "name": "Month", "code": "MONTH" },
+        "duration_value": 1, "amount": "1800.00", "description": "1 month access", "is_active": true,
+        "created_at": "2026-10-03T09:29:12.278839Z", "updated_at": "2026-10-03T09:29:12.284987Z"
+      },
+      "start_date": "2026-10-03",
+      "end_date": "2026-11-02",
+      "amount": "1800.00",
+      "discount": "0.00",
+      "net_payable": "1800.00",
+      "amount_paid": "1800.00",
+      "balance": "0.00",
+      "is_active": false,
+      "payments": [
+        {
+          "id": 1, "amount": "1800.00", "payment_date": "2026-10-03T09:29:12.292024Z",
+          "payment_method": "UPI", "transaction_reference": "UPI123456", "notes": "First month",
+          "created_at": "2026-10-03T09:29:12.292125Z"
+        }
+      ]
+    }
+  ]
+}
+```
+
+## 11. Payments
+
+Record and list payments independently of member create/update — this is how recurring payments
+(installments, renewals) are captured over time. A member's full **payment history** comes from the
+list call. Payments are soft-voided (`is_active=false`), never hard-deleted.
+
+### Record a payment — `POST /payments/?business_account_id=1`
+
+**Required:** `member_id`, `amount` (> 0), `payment_method`.
+**Optional:** `membership_id` (defaults to the member's **current active** membership so dues stay
+attributable), `payment_date` (defaults to now — may be **back-dated**), `transaction_reference`,
+`notes`.
+
+```bash
+curl -X POST "http://localhost:8084/api/v1/payments/?business_account_id=1" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "member_id": 1,
+    "amount": "2500.00",
+    "payment_method": "CASH",
+    "payment_date": "2026-11-20T10:00:00Z",
+    "notes": "Balance for quarterly plan"
+  }'
+```
+
+**Response `201`**
+
+```json
+{
+  "id": 4,
+  "member_id": 1,
+  "membership_id": 2,
+  "amount": "2500.00",
+  "payment_date": "2026-11-20T10:00:00Z",
+  "payment_method": "CASH",
+  "transaction_reference": null,
+  "notes": "Balance for quarterly plan",
+  "is_active": true,
+  "created_at": "2026-11-20T10:00:01.000000Z"
+}
+```
+
+### List payments — `GET /payments/?business_account_id=1&member_id=1`
+
+Paginated, newest first. Optional filters: `member_id`, `payment_date_from`, `payment_date_to`
+(both `YYYY-MM-DD`, inclusive).
+
+```bash
+curl -X GET "http://localhost:8084/api/v1/payments/?business_account_id=1&member_id=1" \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response `200`** — `{ "count", "next", "previous", "results": [ <payment>, ... ] }` where each item
+has the same shape as the create response above.
+
+### Get a payment — `GET /payments/?business_account_id=1&payment_id=4`
+
+Returns a single payment (same shape as above).
+
+### Void a payment — `DELETE /payments/?business_account_id=1&payment_id=4`
+
+Soft-void (sets `is_active=false`; it stops counting toward collections and dues). **Response `204`**.
+
+## 12. Collections (summary)
+
+Money totals the member-count tiles can't give you (they need SUMs), plus outstanding dues across
+the business. Member counts (total / active / expiring / expired / inactive) still come from the
+`/members/` list `count`.
+
+### Collections summary — `GET /collections/?business_account_id=1`
+
+Optional `period_from` / `period_to` (`YYYY-MM-DD`, inclusive) add a `period_collection` total for
+that range.
+
+```bash
+curl -X GET "http://localhost:8084/api/v1/collections/?business_account_id=1&period_from=2026-11-01&period_to=2026-11-30" \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response `200`**
+
+```json
+{
+  "today_collection": "2500.00",
+  "month_collection": "4500.00",
+  "outstanding_dues": "2500.00",
+  "period_collection": "4500.00"
+}
+```
+
+`period_collection` is present only when `period_from` and/or `period_to` are supplied.

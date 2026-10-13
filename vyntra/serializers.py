@@ -11,6 +11,7 @@ from .models import (
     BusinessAdmin,
     BusinessType,
     DurationType,
+    GymMember,
     Member,
     MemberAttendance,
     Membership,
@@ -18,6 +19,11 @@ from .models import (
     Payment,
     Staff,
 )
+
+
+def _money(value):
+    """Format a Decimal as a 2-place string, matching how DecimalField fields serialize."""
+    return str(Decimal(value).quantize(Decimal("0.01")))
 
 
 class BusinessAdminSerializer(serializers.ModelSerializer):
@@ -107,6 +113,8 @@ class MemberListQuerySerializer(BusinessAccountQuerySerializer):
     # Filter on the active membership's end_date (expired / expiring members).
     end_date_from = serializers.DateField(required=False)
     end_date_to = serializers.DateField(required=False)
+    # Only members whose active membership still has an outstanding balance (dues pending).
+    has_dues = serializers.BooleanField(required=False, allow_null=True, default=None)
 
 
 class MemberDetailQuerySerializer(BusinessAccountQuerySerializer):
@@ -123,19 +131,109 @@ class PaymentSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_at"]
 
 
+class PaymentDetailSerializer(serializers.ModelSerializer):
+    """Read shape for the standalone payments endpoint (includes member/membership refs)."""
+
+    class Meta:
+        model = Payment
+        fields = [
+            "id", "member_id", "membership_id", "amount", "payment_date", "payment_method",
+            "transaction_reference", "notes", "is_active", "created_at",
+        ]
+
+
+class PaymentCreateSerializer(serializers.ModelSerializer):
+    member_id = serializers.IntegerField(write_only=True)
+    membership_id = serializers.IntegerField(write_only=True, required=False, allow_null=True)
+    amount = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal("0.01"))
+    payment_date = serializers.DateTimeField(required=False)
+
+    class Meta:
+        model = Payment
+        fields = [
+            "member_id", "membership_id", "amount", "payment_date", "payment_method",
+            "transaction_reference", "notes",
+        ]
+
+    def validate_member_id(self, value):
+        member = Member.objects.filter(
+            id=value, business_account_id=self.context["business_account_id"], is_active=True
+        ).first()
+        if member is None:
+            raise serializers.ValidationError("Member not found or inactive.")
+        return member
+
+    def validate_membership_id(self, value):
+        if value is None:
+            return None
+        membership = Membership.objects.filter(
+            id=value, business_account_id=self.context["business_account_id"]
+        ).first()
+        if membership is None:
+            raise serializers.ValidationError("Membership not found.")
+        return membership
+
+    def validate(self, attrs):
+        membership = attrs.get("membership_id")
+        member = attrs.get("member_id")
+        if membership is not None and member is not None and membership.member_id != member.id:
+            raise serializers.ValidationError({"membership_id": "Membership does not belong to this member."})
+        return attrs
+
+
+class PaymentListQuerySerializer(BusinessAccountQuerySerializer):
+    member_id = serializers.IntegerField(required=False)
+    payment_date_from = serializers.DateField(required=False)
+    payment_date_to = serializers.DateField(required=False)
+
+
+class PaymentDetailQuerySerializer(BusinessAccountQuerySerializer):
+    payment_id = serializers.IntegerField()
+
+
+class MembershipListQuerySerializer(BusinessAccountQuerySerializer):
+    member_id = serializers.IntegerField()
+
+
+class CollectionsQuerySerializer(BusinessAccountQuerySerializer):
+    period_from = serializers.DateField(required=False)
+    period_to = serializers.DateField(required=False)
+
+
+class GymMemberSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = GymMember
+        fields = ["emergency_contact_name", "emergency_contact_phone", "emergency_contact_address"]
+
+
 class MemberSerializer(serializers.ModelSerializer):
     email = serializers.EmailField(max_length=255, required=False, allow_null=True, allow_blank=True)
     membership_plan_id = serializers.IntegerField(write_only=True)
     start_date = serializers.DateField(write_only=True, required=False)
+    discount = serializers.DecimalField(
+        max_digits=12, decimal_places=2, min_value=0, required=False, write_only=True
+    )
     payment = PaymentSerializer(write_only=True, required=False)
+    # Emergency contact / address live on the gym_member 1:1 table; written flat, read nested.
+    emergency_contact_name = serializers.CharField(
+        max_length=200, required=False, allow_null=True, allow_blank=True, write_only=True
+    )
+    emergency_contact_phone = serializers.CharField(
+        max_length=20, required=False, allow_null=True, allow_blank=True, write_only=True
+    )
+    emergency_contact_address = serializers.CharField(
+        max_length=500, required=False, allow_null=True, allow_blank=True, write_only=True
+    )
+    gym_details = GymMemberSerializer(read_only=True)
     membership = serializers.SerializerMethodField()
 
     class Meta:
         model = Member
         fields = [
             "id", "member_code", "first_name", "last_name", "phone", "email",
-            "date_of_birth", "gender", "is_active", "membership_plan_id", "start_date", "payment",
-            "membership", "created_at", "updated_at",
+            "date_of_birth", "gender", "is_active", "membership_plan_id", "start_date", "discount",
+            "payment", "emergency_contact_name", "emergency_contact_phone", "emergency_contact_address",
+            "gym_details", "membership", "created_at", "updated_at",
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
 
@@ -161,6 +259,14 @@ class MemberSerializer(serializers.ModelSerializer):
         if members.exists():
             raise serializers.ValidationError("A member with this code already exists in this business.")
         return value
+
+    def validate(self, attrs):
+        # Discount applies to the plan being assigned; it can't exceed the plan's price.
+        plan = attrs.get("membership_plan_id")
+        discount = attrs.get("discount")
+        if plan is not None and discount is not None and discount > plan.amount:
+            raise serializers.ValidationError({"discount": "Discount can't exceed the plan amount."})
+        return attrs
 
 
 class StaffListQuerySerializer(BusinessAccountQuerySerializer):
@@ -226,12 +332,30 @@ class MembershipPlanSerializer(serializers.ModelSerializer):
 
 class MembershipSerializer(serializers.ModelSerializer):
     membership_plan = MembershipPlanSerializer(read_only=True)
-    # Prefetched by MemberService.get_members.
+    # Prefetched as `active_payments` by MemberService.get_members / get_memberships.
     payments = PaymentSerializer(source="active_payments", many=True, read_only=True)
+    net_payable = serializers.SerializerMethodField()
+    amount_paid = serializers.SerializerMethodField()
+    balance = serializers.SerializerMethodField()
 
     class Meta:
         model = Membership
-        fields = ["id", "membership_plan", "start_date", "end_date", "amount", "is_active", "payments"]
+        fields = [
+            "id", "membership_plan", "start_date", "end_date", "amount", "discount",
+            "net_payable", "amount_paid", "balance", "is_active", "payments",
+        ]
+
+    def _amount_paid(self, membership):
+        return sum((p.amount for p in membership.active_payments), Decimal("0"))
+
+    def get_amount_paid(self, membership):
+        return _money(self._amount_paid(membership))
+
+    def get_net_payable(self, membership):
+        return _money(membership.amount - membership.discount)
+
+    def get_balance(self, membership):
+        return _money((membership.amount - membership.discount) - self._amount_paid(membership))
 
 
 class AttendanceMemberSerializer(serializers.ModelSerializer):
