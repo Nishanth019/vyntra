@@ -1,7 +1,7 @@
 # DigitalOcean App Platform spec. Secrets (DB_*, DJANGO_SECRET_KEY, JWT_SECRET_KEY)
 # are set in the DO console, not here.
 name: vyntra-api
-region: blr
+region: sgp
 services:
   - name: api
     github:
