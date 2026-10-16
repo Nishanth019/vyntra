@@ -375,3 +375,134 @@ class MemberAttendance(TimeStampedModel):
                 name="uk_member_attendance_day",
             ),
         ]
+
+
+class MemberActivity(TimeStampedModel):
+    """One line of a member's history: joined, renewed, plan changed, paid, deactivated…"""
+
+    business_account = models.ForeignKey(
+        BusinessAccount,
+        on_delete=models.PROTECT,
+        db_column="business_account_id",
+        related_name="member_activities",
+    )
+    member = models.ForeignKey(
+        Member,
+        on_delete=models.PROTECT,
+        db_column="member_id",
+        related_name="activities",
+    )
+    membership = models.ForeignKey(
+        Membership,
+        on_delete=models.PROTECT,
+        db_column="membership_id",
+        related_name="activities",
+        null=True,
+        blank=True,
+    )
+    payment = models.ForeignKey(
+        Payment,
+        on_delete=models.PROTECT,
+        db_column="payment_id",
+        related_name="activities",
+        null=True,
+        blank=True,
+    )
+
+    activity_type = models.CharField(max_length=30)
+    description = models.CharField(max_length=1000)
+
+    # Null when the system did it (e.g. auto-inactive after expiry).
+    created_by_business_admin = models.ForeignKey(
+        BusinessAdmin,
+        on_delete=models.PROTECT,
+        db_column="created_by_business_admin_id",
+        related_name="member_activities",
+        null=True,
+        blank=True,
+    )
+
+    class Meta:
+        managed = False
+        db_table = "member_activity"
+
+
+class BusinessAdminDevice(TimeStampedModel):
+    """An admin's phone, registered for push notifications."""
+
+    business_admin = models.ForeignKey(
+        BusinessAdmin,
+        on_delete=models.PROTECT,
+        db_column="business_admin_id",
+        related_name="devices",
+    )
+
+    push_token = models.CharField(max_length=255, unique=True)
+    platform = models.CharField(max_length=20, null=True, blank=True)
+
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        managed = False
+        db_table = "business_admin_device"
+
+
+class Notification(TimeStampedModel):
+    business_account = models.ForeignKey(
+        BusinessAccount,
+        on_delete=models.PROTECT,
+        db_column="business_account_id",
+        related_name="notifications",
+    )
+    business_admin = models.ForeignKey(
+        BusinessAdmin,
+        on_delete=models.PROTECT,
+        db_column="business_admin_id",
+        related_name="notifications",
+    )
+
+    notification_type = models.CharField(max_length=30)
+    title = models.CharField(max_length=200)
+    message = models.CharField(max_length=1000)
+
+    # What to open on tap: a member list filter, or one member.
+    member_filter = models.CharField(max_length=30, null=True, blank=True)
+    member = models.ForeignKey(
+        Member,
+        on_delete=models.PROTECT,
+        db_column="member_id",
+        related_name="notifications",
+        null=True,
+        blank=True,
+    )
+
+    # India date the notification is for; daily notifications are sent once per date.
+    notification_date = models.DateField()
+
+    is_read = models.BooleanField(default=False)
+
+    class Meta:
+        managed = False
+        db_table = "notification"
+
+
+class NotificationSetting(TimeStampedModel):
+    business_account = models.OneToOneField(
+        BusinessAccount,
+        on_delete=models.PROTECT,
+        db_column="business_account_id",
+        related_name="notification_setting",
+    )
+
+    morning_summary = models.BooleanField(default=True)
+    expiry_reminders = models.BooleanField(default=True)
+    expired_followups = models.BooleanField(default=True)
+    dues_reminders = models.BooleanField(default=True)
+    no_show_alerts = models.BooleanField(default=True)
+    birthday_alerts = models.BooleanField(default=True)
+    activity_alerts = models.BooleanField(default=True)
+    evening_summary = models.BooleanField(default=True)
+
+    class Meta:
+        managed = False
+        db_table = "notification_setting"

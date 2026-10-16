@@ -1,0 +1,51 @@
+{% extends "vyntra/base_page.html" %}
+{% block title %}Privacy Policy{% endblock %}
+{% block content %}
+<h1>Privacy Policy</h1>
+<p class="muted">Effective 17 October 2026</p>
+
+<p>Vyntra is a gym management app. Gym owners and their staff ("admins") use it to manage members,
+plans, payments and attendance. This policy explains what data the app handles and how.</p>
+
+<h2>Data we collect</h2>
+<ul>
+  <li><strong>Admin accounts:</strong> name, email address, mobile number and password (stored encrypted).</li>
+  <li><strong>Gym and member records entered by admins:</strong> member name, member ID, mobile number, email,
+    date of birth, gender, emergency contact and address, membership plans, payments and attendance.</li>
+  <li><strong>Device data:</strong> a push notification token, so we can send notifications to the admin's phone.</li>
+</ul>
+<p>We do not collect location, contacts, photos or advertising identifiers, and the app has no ads.</p>
+
+<h2>How we use it</h2>
+<ul>
+  <li>To run the app: sign-in, member management, payment and attendance records, reports and insights.</li>
+  <li>To send admins notifications such as plan expiries, dues and daily summaries.</li>
+</ul>
+<p>We do not sell personal data or share it for advertising.</p>
+
+<h2>Who processes it</h2>
+<p>Data is stored on our servers hosted by DigitalOcean and Aiven (Singapore). Push notifications are delivered
+through Expo and Google Firebase Cloud Messaging / Apple Push Notification service. These providers process data
+only to provide their service to us.</p>
+
+<h2>Security</h2>
+<p>All traffic uses HTTPS. Passwords are stored as one-way hashes. Each gym's data is only visible to that gym's
+admins.</p>
+
+<h2>Gym members' data</h2>
+<p>Member records are entered and controlled by the gym. Members who want their data corrected or removed should
+contact their gym, or write to us at the email below.</p>
+
+<h2>Retention and deletion</h2>
+<p>Data is kept while the gym uses Vyntra. Admins can delete their account from the app
+(Profile → Delete Account) or as described on our <a href="/account-deletion/">account deletion page</a>.</p>
+
+<h2>Children</h2>
+<p>The app is meant for gym businesses and is not directed at children under 13.</p>
+
+<h2>Contact</h2>
+<p>Email <a href="mailto:bhukyanishanth69@gmail.com">bhukyanishanth69@gmail.com</a> or call
+<a href="tel:+919121418845">+91 91214 18845</a> / <a href="tel:+919390607917">+91 93906 07917</a>.</p>
+
+<p class="muted">We may update this policy; the effective date above shows the latest version.</p>
+{% endblock %}

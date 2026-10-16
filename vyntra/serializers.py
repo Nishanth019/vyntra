@@ -13,9 +13,12 @@ from .models import (
     DurationType,
     GymMember,
     Member,
+    MemberActivity,
     MemberAttendance,
     Membership,
     MembershipPlan,
+    Notification,
+    NotificationSetting,
     Payment,
     Staff,
 )
@@ -110,10 +113,12 @@ class MemberListQuerySerializer(BusinessAccountQuerySerializer):
     phone = serializers.CharField(required=False)
     member_code = serializers.CharField(required=False)
     is_active = serializers.BooleanField(required=False, allow_null=True, default=None)
+    # live: a membership covers today. expired: active member whose latest plan has ended.
+    status = serializers.ChoiceField(choices=["live", "expired"], required=False)
     # Filter on the active membership's end_date (expired / expiring members).
     end_date_from = serializers.DateField(required=False)
     end_date_to = serializers.DateField(required=False)
-    # Only members whose active membership still has an outstanding balance (dues pending).
+    # Only members with an outstanding balance across their memberships (dues pending).
     has_dues = serializers.BooleanField(required=False, allow_null=True, default=None)
 
 
@@ -226,6 +231,8 @@ class MemberSerializer(serializers.ModelSerializer):
     )
     gym_details = GymMemberSerializer(read_only=True)
     membership = serializers.SerializerMethodField()
+    status = serializers.SerializerMethodField()
+    total_due = serializers.SerializerMethodField()
 
     class Meta:
         model = Member
@@ -233,9 +240,22 @@ class MemberSerializer(serializers.ModelSerializer):
             "id", "member_code", "first_name", "last_name", "phone", "email",
             "date_of_birth", "gender", "is_active", "membership_plan_id", "start_date", "discount",
             "payment", "emergency_contact_name", "emergency_contact_phone", "emergency_contact_address",
-            "gym_details", "membership", "created_at", "updated_at",
+            "gym_details", "membership", "status", "total_due", "created_at", "updated_at",
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
+
+    def get_status(self, member):
+        """live / upcoming / expired / no_plan / inactive (members are loaded with `is_live`)."""
+        if not member.is_active:
+            return "inactive"
+        if member.is_live:
+            return "live"
+        if not member.active_memberships:
+            return "no_plan"
+        return "upcoming" if member.active_memberships[0].start_date > timezone.localdate() else "expired"
+
+    def get_total_due(self, member):
+        return _money(member.total_due)
 
     def get_membership(self, member):
         # Members are loaded with their active membership prefetched as `active_memberships`.
@@ -471,3 +491,105 @@ class ChangePasswordSerializer(serializers.Serializer):
     def validate_new_password(self, value):
         validate_password(value)
         return value
+
+
+class MembershipActionSerializer(serializers.Serializer):
+    """Renew (any plan, starts after the current one) or change plan mid-way (starts today)."""
+
+    action = serializers.ChoiceField(choices=["renew", "change_plan"])
+    member_id = serializers.IntegerField()
+    membership_plan_id = serializers.IntegerField()
+    start_date = serializers.DateField(required=False)
+    discount = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=0, required=False)
+    payment = PaymentSerializer(required=False)
+
+    def validate_member_id(self, value):
+        member = Member.objects.filter(id=value, business_account_id=self.context["business_account_id"]).first()
+        if member is None:
+            raise serializers.ValidationError("Member not found.")
+        return member
+
+    def validate_membership_plan_id(self, value):
+        plan = (
+            MembershipPlan.objects.select_related("duration_type")
+            .filter(id=value, business_account_id=self.context["business_account_id"], is_active=True)
+            .first()
+        )
+        if plan is None:
+            raise serializers.ValidationError("Membership plan not found or inactive.")
+        return plan
+
+    def validate(self, attrs):
+        discount = attrs.get("discount")
+        if discount is not None and discount > attrs["membership_plan_id"].amount:
+            raise serializers.ValidationError({"discount": "Discount can't exceed the plan amount."})
+        return attrs
+
+
+class MembershipUpdateSerializer(serializers.Serializer):
+    """Correct the start date / discount, or extend (freeze) by some days."""
+
+    start_date = serializers.DateField(required=False)
+    discount = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=0, required=False)
+    extend_days = serializers.IntegerField(min_value=1, max_value=365, required=False)
+    reason = serializers.CharField(max_length=200, required=False, allow_blank=True)
+
+    def validate(self, attrs):
+        if not attrs:
+            raise serializers.ValidationError("Nothing to update.")
+        discount = attrs.get("discount")
+        if discount is not None and discount > self.context["membership"].amount:
+            raise serializers.ValidationError({"discount": "Discount can't exceed the plan amount."})
+        return attrs
+
+
+class MembershipDetailQuerySerializer(BusinessAccountQuerySerializer):
+    membership_id = serializers.IntegerField()
+
+
+class MemberActivitySerializer(serializers.ModelSerializer):
+    created_by = serializers.CharField(source="created_by_business_admin.name", default=None)
+
+    class Meta:
+        model = MemberActivity
+        fields = ["id", "activity_type", "description", "membership_id", "payment_id", "created_by", "created_at"]
+
+
+class InsightsQuerySerializer(BusinessAccountQuerySerializer):
+    date_from = serializers.DateField()
+    date_to = serializers.DateField()
+
+    def validate(self, attrs):
+        if attrs["date_to"] < attrs["date_from"]:
+            raise serializers.ValidationError({"date_to": "End date can't be before the start date."})
+        if (attrs["date_to"] - attrs["date_from"]).days > 731:
+            raise serializers.ValidationError({"date_to": "Choose a period of up to 2 years."})
+        return attrs
+
+
+class NotificationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Notification
+        fields = [
+            "id", "notification_type", "title", "message", "member_filter", "member_id",
+            "notification_date", "is_read", "created_at",
+        ]
+
+
+class NotificationReadSerializer(BusinessAccountQuerySerializer):
+    # Omit to mark all as read.
+    notification_id = serializers.IntegerField(required=False)
+
+
+class NotificationSettingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = NotificationSetting
+        fields = [
+            "morning_summary", "expiry_reminders", "expired_followups", "dues_reminders",
+            "no_show_alerts", "birthday_alerts", "activity_alerts", "evening_summary",
+        ]
+
+
+class DeviceSerializer(serializers.Serializer):
+    push_token = serializers.CharField(max_length=255)
+    platform = serializers.CharField(max_length=20, required=False, allow_blank=True)

@@ -8,7 +8,7 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.pagination import PageNumberPagination
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -16,13 +16,16 @@ from .models import (
     BusinessAccount,
     BusinessAccountAdmin,
     BusinessAdmin,
+    BusinessAdminDevice,
     BusinessType,
     DurationType,
     GymMember,
     Member,
+    MemberActivity,
     MemberAttendance,
     Membership,
     MembershipPlan,
+    Notification,
     Payment,
     Staff,
 )
@@ -38,7 +41,10 @@ from .serializers import (
     DurationTypeSerializer,
     BusinessAccountQuerySerializer,
     CollectionsQuerySerializer,
+    DeviceSerializer,
+    InsightsQuerySerializer,
     LoginSerializer,
+    MemberActivitySerializer,
     MemberAttendanceDetailQuerySerializer,
     MemberAttendanceListQuerySerializer,
     MemberAttendanceSerializer,
@@ -46,10 +52,16 @@ from .serializers import (
     MemberDetailQuerySerializer,
     MemberListQuerySerializer,
     MemberSerializer,
+    MembershipActionSerializer,
+    MembershipDetailQuerySerializer,
     MembershipListQuerySerializer,
     MembershipPlanDetailQuerySerializer,
     MembershipPlanSerializer,
     MembershipSerializer,
+    MembershipUpdateSerializer,
+    NotificationReadSerializer,
+    NotificationSerializer,
+    NotificationSettingSerializer,
     PaymentCreateSerializer,
     PaymentDetailQuerySerializer,
     PaymentDetailSerializer,
@@ -60,10 +72,15 @@ from .serializers import (
     StaffSerializer,
 )
 from .services import (
+    ActivityService,
     BusinessAccountService,
     BusinessAdminAuthService,
+    InsightsService,
     MemberService,
+    MembershipService,
+    NotificationService,
     PaymentService,
+    rupees,
 )
 
 
@@ -196,6 +213,14 @@ class BusinessAccountDetailView(APIView):
 class MemberView(APIView):
     permission_classes = [IsAuthenticated]
 
+    # Personal fields whose changes are written to the member's history.
+    TRACKED_FIELDS = {
+        "member_code": "Member ID", "first_name": "First name", "last_name": "Last name", "phone": "Mobile",
+        "email": "Email", "date_of_birth": "Date of birth", "gender": "Gender",
+        "emergency_contact_name": "Emergency contact", "emergency_contact_phone": "Emergency mobile",
+        "emergency_contact_address": "Address",
+    }
+
     def get(self, request):
         if "member_id" in request.query_params:
             member = self.get_member(request)
@@ -220,21 +245,7 @@ class MemberView(APIView):
             members = members.filter(phone=params["phone"])
         if params.get("member_code"):
             members = members.filter(member_code=params["member_code"])
-        if params["is_active"] is not None:
-            members = members.filter(is_active=params["is_active"])
-
-        # One filter() call so both dates apply to the same (active) membership.
-        end_date_filters = {}
-        if params.get("end_date_from"):
-            end_date_filters["memberships__end_date__gte"] = params["end_date_from"]
-        if params.get("end_date_to"):
-            end_date_filters["memberships__end_date__lte"] = params["end_date_to"]
-        if end_date_filters:
-            members = members.filter(memberships__is_active=True, **end_date_filters)
-
-        if params.get("has_dues") is not None:
-            due_ids = MemberService.member_ids_with_dues(params["business_account_id"])
-            members = members.filter(id__in=due_ids) if params["has_dues"] else members.exclude(id__in=due_ids)
+        members = MemberService.filter_members(members, params).distinct()
 
         paginator = PageNumberPagination()
         page = paginator.paginate_queryset(members, request, view=self)
@@ -263,10 +274,18 @@ class MemberView(APIView):
                 is_active=True,
             )
             self.upsert_gym_details(member, gym_details)
-            membership = self.create_membership(member, plan, start_date, discount)
+            membership = MembershipService.create(member, plan, start_date, discount)
+            ActivityService.log(
+                member, "MEMBER_CREATED", f"Joined: {MembershipService.describe(membership)}", request.user,
+                membership=membership,
+            )
             if payment:
-                self.create_payment(request, member, membership, payment)
+                PaymentService.create(member, membership, payment, request.user)
 
+        NotificationService.notify_activity(
+            business_account_id, request.user, "New member added",
+            f"{request.user.name} added {member} on {plan.name}", member,
+        )
         member = MemberService.get_members(business_account_id).get(id=member.id)
         return Response(MemberSerializer(member).data, status=status.HTTP_201_CREATED)
 
@@ -277,22 +296,27 @@ class MemberView(APIView):
             member, data=request.data, partial=True, context={"business_account_id": member.business_account_id}
         )
         serializer.is_valid(raise_exception=True)
+        # Plan changes now go through /memberships/; kept here for older app versions.
         plan = serializer.validated_data.pop("membership_plan_id", None)
         start_date = serializer.validated_data.pop("start_date", timezone.localdate())
         discount = serializer.validated_data.pop("discount", Decimal("0"))
         payment = serializer.validated_data.pop("payment", None)
         gym_details = self.pop_gym_details(serializer.validated_data)
+        changes = self.describe_changes(member, {**serializer.validated_data, **gym_details})
+        reactivated = serializer.validated_data.get("is_active") is True and not member.is_active
 
         with transaction.atomic():
             serializer.save()
             self.upsert_gym_details(member, gym_details)
-            # A different plan replaces the current active membership.
+            if changes:
+                ActivityService.log(member, "MEMBER_UPDATED", "Details updated: " + "; ".join(changes), request.user)
+            if reactivated:
+                ActivityService.log(member, "MEMBER_REACTIVATED", "Reactivated", request.user)
             membership = member.active_memberships[0] if member.active_memberships else None
             if plan and (membership is None or membership.membership_plan_id != plan.id):
-                Membership.objects.filter(member=member, is_active=True).update(is_active=False)
-                membership = self.create_membership(member, plan, start_date, discount)
+                membership = MembershipService.renew(member, plan, start_date, discount, request.user)
             if payment:
-                self.create_payment(request, member, membership, payment)
+                PaymentService.create(member, membership, payment, request.user)
 
         member = MemberService.get_members(member.business_account_id).get(id=member.id)
         return Response(MemberSerializer(member).data)
@@ -303,7 +327,7 @@ class MemberView(APIView):
         with transaction.atomic():
             member.is_active = False
             member.save()
-            Membership.objects.filter(member=member, is_active=True).update(is_active=False)
+            ActivityService.log(member, "MEMBER_DEACTIVATED", "Deactivated", request.user)
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -315,17 +339,19 @@ class MemberView(APIView):
 
         return get_object_or_404(MemberService.get_members(params["business_account_id"]), id=params["member_id"])
 
-    def create_membership(self, member, plan, start_date, discount=Decimal("0")):
-        return Membership.objects.create(
-            business_account_id=member.business_account_id,
-            member=member,
-            membership_plan=plan,
-            start_date=start_date,
-            end_date=MemberService.calculate_end_date(start_date, plan),
-            amount=plan.amount,
-            discount=discount,
-            is_active=True,
-        )
+    def describe_changes(self, member, data):
+        """e.g. ["Mobile: 98480… → 91214…"] for the tracked fields that actually change."""
+        gym = getattr(member, "gym_details", None)
+        changes = []
+        for field, label in self.TRACKED_FIELDS.items():
+            if field not in data:
+                continue
+            source = gym if field.startswith("emergency_") else member
+            old = getattr(source, field, None) if source else None
+            new = data[field]
+            if (old or None) != (new or None):
+                changes.append(f"{label}: {old or '—'} → {new or '—'}")
+        return changes
 
     def pop_gym_details(self, data):
         """Pull the gym_member (emergency contact / address) fields out of member data."""
@@ -335,17 +361,6 @@ class MemberView(APIView):
     def upsert_gym_details(self, member, gym_details):
         if gym_details:
             GymMember.objects.update_or_create(member=member, defaults=gym_details)
-
-    def create_payment(self, request, member, membership, payment):
-        payment.setdefault("payment_date", timezone.now())
-        Payment.objects.create(
-            **payment,
-            business_account_id=member.business_account_id,
-            member=member,
-            membership=membership,
-            created_by_business_admin=request.user,
-            is_active=True,
-        )
 
 
 class StaffView(APIView):
@@ -588,22 +603,19 @@ class PaymentView(APIView):
         # Default to the member's current active membership so dues stay attributable.
         if membership is None:
             membership = Membership.objects.filter(member=member, is_active=True).order_by("-id").first()
-        data.setdefault("payment_date", timezone.now())
+        with transaction.atomic():
+            payment = PaymentService.create(member, membership, data, request.user)
 
-        payment = Payment.objects.create(
-            **data,
-            business_account_id=business_account_id,
-            member=member,
-            membership=membership,
-            created_by_business_admin=request.user,
-            is_active=True,
+        NotificationService.notify_activity(
+            business_account_id, request.user, "Payment recorded",
+            f"{request.user.name} recorded {rupees(payment.amount)} from {member}", member,
         )
         return Response(PaymentDetailSerializer(payment).data, status=status.HTTP_201_CREATED)
 
     def delete(self, request):
         payment = self.get_payment(request)
-        payment.is_active = False
-        payment.save()
+        with transaction.atomic():
+            PaymentService.void(payment, request.user)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     def get_payment(self, request):
@@ -612,14 +624,14 @@ class PaymentView(APIView):
         params = query.validated_data
         BusinessAccountService.check_admin_access(request.user, params["business_account_id"])
         return get_object_or_404(
-            Payment.objects.select_related("membership"),
+            Payment.objects.select_related("membership", "member"),
             id=params["payment_id"],
             business_account_id=params["business_account_id"],
         )
 
 
 class MembershipView(APIView):
-    """Full membership history (active + past) for a member, with payments and dues."""
+    """Membership history (GET), renew / change plan (POST), correct or extend the current one (PUT)."""
 
     permission_classes = [IsAuthenticated]
 
@@ -633,6 +645,216 @@ class MembershipView(APIView):
         paginator = PageNumberPagination()
         page = paginator.paginate_queryset(memberships, request, view=self)
         return paginator.get_paginated_response(MembershipSerializer(page, many=True).data)
+
+    def post(self, request):
+        query = BusinessAccountQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        business_account_id = query.validated_data["business_account_id"]
+        BusinessAccountService.check_admin_access(request.user, business_account_id)
+
+        serializer = MembershipActionSerializer(data=request.data, context={"business_account_id": business_account_id})
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        member, plan = data["member_id"], data["membership_plan_id"]
+        discount = data.get("discount", Decimal("0"))
+
+        with transaction.atomic():
+            if not member.is_active:
+                member.is_active = True
+                member.save()
+                ActivityService.log(member, "MEMBER_REACTIVATED", "Reactivated", request.user)
+            if data["action"] == "renew":
+                start_date = data.get("start_date") or MembershipService.renewal_start_date(member)
+                membership = MembershipService.renew(member, plan, start_date, discount, request.user)
+            else:
+                membership = MembershipService.change_plan(member, plan, discount, request.user)
+            if data.get("payment"):
+                PaymentService.create(member, membership, data["payment"], request.user)
+
+        member = MemberService.get_members(business_account_id).get(id=member.id)
+        return Response(MemberSerializer(member).data, status=status.HTTP_201_CREATED)
+
+    def put(self, request):
+        query = MembershipDetailQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        params = query.validated_data
+        BusinessAccountService.check_admin_access(request.user, params["business_account_id"])
+        membership = get_object_or_404(
+            Membership.objects.select_related("membership_plan__duration_type", "member"),
+            id=params["membership_id"],
+            business_account_id=params["business_account_id"],
+        )
+
+        serializer = MembershipUpdateSerializer(data=request.data, context={"membership": membership})
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        with transaction.atomic():
+            MembershipService.update(
+                membership, request.user, start_date=data.get("start_date"), discount=data.get("discount")
+            )
+            if data.get("extend_days"):
+                MembershipService.extend(membership, data["extend_days"], request.user, data.get("reason", ""))
+
+        member = MemberService.get_members(params["business_account_id"]).get(id=membership.member_id)
+        return Response(MemberSerializer(member).data)
+
+
+class MemberActivityView(APIView):
+    """A member's full history, newest first."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        query = MembershipListQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        params = query.validated_data
+        BusinessAccountService.check_admin_access(request.user, params["business_account_id"])
+
+        activities = (
+            MemberActivity.objects.select_related("created_by_business_admin")
+            .filter(business_account_id=params["business_account_id"], member_id=params["member_id"])
+            .order_by("-created_at", "-id")
+        )
+        paginator = PageNumberPagination()
+        page = paginator.paginate_queryset(activities, request, view=self)
+        return paginator.get_paginated_response(MemberActivitySerializer(page, many=True).data)
+
+
+class DashboardView(APIView):
+    """Everything the home screen needs in one request."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        query = BusinessAccountQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        business_account_id = query.validated_data["business_account_id"]
+        BusinessAccountService.check_admin_access(request.user, business_account_id)
+
+        return Response({
+            "members": MemberService.get_counts(business_account_id),
+            "collections": PaymentService.get_collections_summary(business_account_id),
+            "checked_in_today": MemberAttendance.objects.filter(
+                business_account_id=business_account_id, attendance_date=timezone.localdate()
+            ).count(),
+            "plans": MembershipPlan.objects.filter(business_account_id=business_account_id, is_active=True).count(),
+            "unread_notifications": Notification.objects.filter(
+                business_account_id=business_account_id, business_admin=request.user, is_read=False
+            ).count(),
+        })
+
+
+class InsightsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        query = InsightsQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        params = query.validated_data
+        BusinessAccountService.check_admin_access(request.user, params["business_account_id"])
+
+        return Response(
+            InsightsService.get_insights(params["business_account_id"], params["date_from"], params["date_to"])
+        )
+
+
+class NotificationView(APIView):
+    """The logged-in admin's notifications for a business (GET), mark read (PUT)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        query = BusinessAccountQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        business_account_id = query.validated_data["business_account_id"]
+        BusinessAccountService.check_admin_access(request.user, business_account_id)
+
+        notifications = Notification.objects.filter(
+            business_account_id=business_account_id, business_admin=request.user
+        ).order_by("-created_at", "-id")
+        paginator = PageNumberPagination()
+        page = paginator.paginate_queryset(notifications, request, view=self)
+        return paginator.get_paginated_response(NotificationSerializer(page, many=True).data)
+
+    def put(self, request):
+        query = NotificationReadSerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        params = query.validated_data
+        BusinessAccountService.check_admin_access(request.user, params["business_account_id"])
+
+        notifications = Notification.objects.filter(
+            business_account_id=params["business_account_id"], business_admin=request.user, is_read=False
+        )
+        if params.get("notification_id"):
+            notifications = notifications.filter(id=params["notification_id"])
+        notifications.update(is_read=True)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class NotificationSettingView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        setting = self.get_setting(request)
+        return Response(NotificationSettingSerializer(setting).data)
+
+    def put(self, request):
+        setting = self.get_setting(request)
+        serializer = NotificationSettingSerializer(setting, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    def get_setting(self, request):
+        query = BusinessAccountQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        business_account_id = query.validated_data["business_account_id"]
+        BusinessAccountService.check_admin_access(request.user, business_account_id)
+        return NotificationService.get_setting(business_account_id)
+
+
+class DeviceView(APIView):
+    """Registers (POST) or removes (DELETE) the admin's phone for push notifications."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = DeviceSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        # A phone moves to whoever logged in on it last.
+        BusinessAdminDevice.objects.update_or_create(
+            push_token=data["push_token"],
+            defaults={"business_admin": request.user, "platform": data.get("platform") or None, "is_active": True},
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    def delete(self, request):
+        serializer = DeviceSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        BusinessAdminDevice.objects.filter(
+            push_token=serializer.validated_data["push_token"], business_admin=request.user
+        ).update(is_active=False)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class DailyJobView(APIView):
+    """
+    Called by the scheduler (GitHub Actions) at 8 AM and 9 PM IST with ?run=morning|evening.
+    Safe to call more than once: each business gets each daily notification once per date.
+    """
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        if settings.CRON_SECRET and request.headers.get("X-Cron-Secret") != settings.CRON_SECRET:
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        run = request.query_params.get("run")
+        if run not in ("morning", "evening"):
+            return Response({"run": ["Use morning or evening."]}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"run": run, "businesses": NotificationService.run_daily(run)})
 
 
 class CollectionsView(APIView):
@@ -749,6 +971,18 @@ class MeView(APIView):
         serializer.save()
 
         return Response(BusinessAdminSerializer(request.user).data)
+
+    def delete(self, request):
+        """Deletes the login: the admin can't sign in again and their phones stop getting notifications."""
+        with transaction.atomic():
+            admin = request.user
+            BusinessAdminDevice.objects.filter(business_admin=admin).update(is_active=False)
+            BusinessAccountAdmin.objects.filter(business_admin=admin).update(is_active=False)
+            admin.is_active = False
+            admin.save()
+        response = Response(status=status.HTTP_204_NO_CONTENT)
+        response.delete_cookie(settings.JWT_COOKIE_NAME)
+        return response
 
 
 class ChangePasswordView(APIView):

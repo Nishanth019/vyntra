@@ -149,7 +149,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Kolkata'
 
 USE_I18N = True
 
@@ -172,3 +172,7 @@ MAILERS = {
         'BACKEND': 'django.core.mail.backends.console.EmailBackend',
     },
 }
+
+
+# Daily notification jobs (/api/v1/cron/daily/). When set, callers must send it as X-Cron-Secret.
+CRON_SECRET = os.getenv("CRON_SECRET", "")

@@ -1,0 +1,31 @@
+# Free scheduler for the daily notification jobs (GitHub Actions is free for public repos).
+# GitHub may start scheduled runs a few minutes late; the API ignores repeat runs on the same day.
+name: Daily notifications
+
+on:
+  schedule:
+    - cron: "30 2 * * *"   # 08:00 IST: auto-inactive, reminders, morning summary
+    - cron: "30 15 * * *"  # 21:00 IST: today's collection summary
+  workflow_dispatch:
+    inputs:
+      run:
+        description: "Which job to run"
+        type: choice
+        options: [morning, evening]
+        default: morning
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Call the API
+        env:
+          API_URL: https://vyntra-api-3ckz6.ondigitalocean.app/api/v1/cron/daily/
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -n "${{ inputs.run }}" ]; then RUN="${{ inputs.run }}";
+          elif [ "${{ github.event.schedule }}" = "30 15 * * *" ]; then RUN=evening;
+          else RUN=morning; fi
+          curl --fail-with-body --retry 3 --retry-all-errors --max-time 120 -X POST \
+            -H "X-Cron-Secret: ${CRON_SECRET}" "${API_URL}?run=${RUN}"
