@@ -301,6 +301,19 @@ class MembershipService:
         """Ends the current plan yesterday and starts the new one today (discount carries any credit)."""
         today = timezone.localdate()
         current = Membership.objects.select_related("membership_plan").filter(member=member, is_active=True).first()
+        if current and current.start_date > today:
+            # An upcoming renewal hasn't been used yet: just swap its plan.
+            old_name = current.membership_plan.name
+            current.membership_plan = plan
+            current.amount = plan.amount
+            current.discount = discount
+            current.end_date = MemberService.calculate_end_date(current.start_date, plan)
+            current.save()
+            ActivityService.log(
+                member, "PLAN_CHANGED", f"Upcoming plan changed from {old_name} to {cls.describe(current)}", admin,
+                membership=current,
+            )
+            return current
         if current:
             current.end_date = max(current.start_date, today - timedelta(days=1))
             current.save()
