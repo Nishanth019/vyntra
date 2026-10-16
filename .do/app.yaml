@@ -1,0 +1,41 @@
+# DigitalOcean App Platform spec. Secrets (DB_*, DJANGO_SECRET_KEY, JWT_SECRET_KEY)
+# are set in the DO console, not here.
+name: vyntra-api
+region: blr
+services:
+  - name: api
+    github:
+      repo: Nishanth019/vyntra
+      branch: main
+      deploy_on_push: true
+    environment_slug: python
+    run_command: gunicorn config.wsgi:application --bind 0.0.0.0:8080 --workers 2 --threads 4 --worker-class gthread --timeout 60 --access-logfile -
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-0.5gb
+    health_check:
+      http_path: /healthz/
+      initial_delay_seconds: 10
+      period_seconds: 10
+      failure_threshold: 3
+    envs:
+      - key: DEBUG
+        value: "False"
+      - key: ALLOWED_HOSTS
+        value: ${APP_DOMAIN},vyntra-lime.vercel.app
+      - key: DB_CONN_MAX_AGE
+        value: "60"
+      - key: DB_NAME
+        type: SECRET
+      - key: DB_USER
+        type: SECRET
+      - key: DB_PASSWORD
+        type: SECRET
+      - key: DB_HOST
+        type: SECRET
+      - key: DB_PORT
+        type: SECRET
+      - key: DJANGO_SECRET_KEY
+        type: SECRET
+      - key: JWT_SECRET_KEY
+        type: SECRET
