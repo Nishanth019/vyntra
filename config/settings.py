@@ -125,6 +125,8 @@ JWT_COOKIE_SAMESITE = "Lax"
 # Native apps don't send an Origin, so this only matters for the web build.
 CORS_ALLOWED_ORIGINS = os.getenv(
     "CORS_ALLOWED_ORIGINS",
+    # The website (DigitalOcean static site) and local Expo web.
+    "https://vyntra-web-664iy.ondigitalocean.app,"
     "http://localhost:8081,http://127.0.0.1:8081,http://localhost:8082,http://127.0.0.1:8082",
 ).split(",")
 
