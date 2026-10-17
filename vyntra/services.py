@@ -49,16 +49,27 @@ def rupees(amount):
     return f"{sign}₹{digits}" + (f".{int(paise * 100):02d}" if paise else "")
 
 
+def _current_membership_expr():
+    """
+    A member's current plan: the latest one that has started (running or last expired), or their
+    only plan when it hasn't started yet. A renewed-early next plan isn't current until it starts.
+    """
+    today = timezone.localdate()
+    started = Membership.objects.filter(member_id=OuterRef("pk"), start_date__lte=today).order_by("-start_date", "-id")
+    active = Membership.objects.filter(member_id=OuterRef("pk"), is_active=True)
+    return Coalesce(Subquery(started.values("id")[:1]), Subquery(active.values("id")[:1]))
+
+
 def _member_due_expr():
-    """A member's dues on their current (active) plan: amount − discount − its active payments."""
+    """Dues on the member's current plan: amount − discount − its active payments."""
     payable = Subquery(
-        Membership.objects.filter(member_id=OuterRef("pk"), is_active=True)
+        Membership.objects.filter(id=OuterRef("current_membership_id"))
         .annotate(net=F("amount") - F("discount"))
         .values("net")[:1],
         output_field=_MONEY,
     )
     paid = Subquery(
-        Payment.objects.filter(membership__member_id=OuterRef("pk"), membership__is_active=True, is_active=True)
+        Payment.objects.filter(membership_id=OuterRef("current_membership_id"), is_active=True)
         .values("membership_id")
         .annotate(s=Sum("amount"))
         .values("s")[:1],
@@ -128,22 +139,25 @@ class BusinessAccountService:
 
 class MemberService:
     """
-    A member has one `is_active` membership: their latest (current, upcoming or last expired).
-    Dues come from it alone; older ones are history.
+    A member has one `is_active` membership: their latest (current, next, or last expired).
+    Their *current* plan is the one that has started (see _current_membership_expr); a
+    renewed-early next plan becomes current on its start date. Dues come from the current plan.
     """
+
+    # Renew Early is offered in the last days of a running plan.
+    RENEW_EARLY_DAYS = 7
 
     @classmethod
     def get_members(cls, business_account_id):
         """
-        Members of the business, with their active membership (plan + payments) prefetched as
-        `active_memberships`, and annotated with `is_live` (a membership covers today) and `total_due`.
+        Members of the business, with their active membership (latest plan) prefetched as
+        `active_memberships` and the plan running today as `running_memberships`, annotated with
+        `is_live` (a plan covers today), `current_membership_id` and `total_due`.
         """
         today = timezone.localdate()
         active_payments = Payment.objects.filter(is_active=True).order_by("-payment_date")
-        active_memberships = (
-            Membership.objects.filter(is_active=True)
-            .select_related("membership_plan__duration_type")
-            .prefetch_related(Prefetch("payments", queryset=active_payments, to_attr="active_payments"))
+        memberships = Membership.objects.select_related("membership_plan__duration_type").prefetch_related(
+            Prefetch("payments", queryset=active_payments, to_attr="active_payments")
         )
         covering_today = Membership.objects.filter(
             member_id=OuterRef("pk"), start_date__lte=today, end_date__gte=today
@@ -152,10 +166,25 @@ class MemberService:
             Member.objects.filter(business_account_id=business_account_id)
             .select_related("gym_details")
             .prefetch_related(
-                Prefetch("memberships", queryset=active_memberships, to_attr="active_memberships")
+                Prefetch("memberships", queryset=memberships.filter(is_active=True), to_attr="active_memberships"),
+                Prefetch(
+                    "memberships",
+                    queryset=memberships.filter(start_date__lte=today, end_date__gte=today).order_by("-start_date"),
+                    to_attr="running_memberships",
+                ),
             )
-            .annotate(is_live=Exists(covering_today), total_due=_member_due_expr())
+            .annotate(is_live=Exists(covering_today), current_membership_id=_current_membership_expr())
+            .annotate(total_due=_member_due_expr())
         )
+
+    @classmethod
+    def current_and_next(cls, member):
+        """(current plan, renewed-early next plan or None) for a member loaded by get_members."""
+        active = member.active_memberships[0] if member.active_memberships else None
+        running = member.running_memberships[0] if member.running_memberships else None
+        if running and active and active.id != running.id and active.start_date > running.end_date:
+            return running, active
+        return running or active, None
 
     @classmethod
     def filter_members(cls, members, params):
@@ -288,6 +317,30 @@ class MembershipService:
         return membership
 
     @classmethod
+    def renew_early(cls, member, current, plan, start_date, discount, admin):
+        """Adds the next plan after a running one; it becomes current on `start_date`."""
+        membership = cls.create(member, plan, start_date, discount)
+        ActivityService.log(
+            member,
+            "MEMBERSHIP_RENEWED",
+            f"Renewed early (current {current.membership_plan.name} ends {current.end_date:%d %b %Y}): "
+            f"{cls.describe(membership)}",
+            admin,
+            membership=membership,
+        )
+        return membership
+
+    @classmethod
+    def cancel_next(cls, member, current, next_plan, admin):
+        """Removes a renewed-early next plan (only while it has no payments); `current` is active again."""
+        MemberActivity.objects.filter(membership=next_plan).update(membership=None)
+        description = f"Next plan cancelled: {cls.describe(next_plan)}"
+        next_plan.delete()
+        current.is_active = True
+        current.save()
+        ActivityService.log(member, "PLAN_CHANGED", description, admin, membership=current)
+
+    @classmethod
     def change_plan(cls, member, plan, start_date, discount, admin):
         """
         Replaces the current plan with a brand-new one from `start_date`. The old plan ends the day
@@ -328,6 +381,11 @@ class MembershipService:
         old_end = membership.end_date
         membership.end_date = old_end + timedelta(days=days)
         membership.save()
+        # A renewed-early next plan moves out by the same days so the plans never overlap.
+        for later in Membership.objects.filter(member_id=membership.member_id, start_date__gt=old_end):
+            later.start_date += timedelta(days=days)
+            later.end_date += timedelta(days=days)
+            later.save()
         text = f"Extended by {days} day{'' if days == 1 else 's'}: {old_end:%d %b %Y} → {membership.end_date:%d %b %Y}"
         ActivityService.log(
             membership.member, "MEMBERSHIP_EXTENDED", text + (f" ({reason})" if reason else ""), admin,

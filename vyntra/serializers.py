@@ -5,6 +5,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.utils import timezone
 from rest_framework import serializers
 
+from .services import MemberService
 from .models import (
     BusinessAccount,
     BusinessAccountAdmin,
@@ -232,6 +233,7 @@ class MemberSerializer(serializers.ModelSerializer):
     )
     gym_details = GymMemberSerializer(read_only=True)
     membership = serializers.SerializerMethodField()
+    next_membership = serializers.SerializerMethodField()
     status = serializers.SerializerMethodField()
     total_due = serializers.SerializerMethodField()
 
@@ -241,7 +243,7 @@ class MemberSerializer(serializers.ModelSerializer):
             "id", "member_code", "first_name", "last_name", "phone", "email",
             "date_of_birth", "gender", "is_active", "membership_plan_id", "start_date", "discount",
             "payment", "emergency_contact_name", "emergency_contact_phone", "emergency_contact_address",
-            "gym_details", "membership", "status", "total_due", "created_at", "updated_at",
+            "gym_details", "membership", "next_membership", "status", "total_due", "created_at", "updated_at",
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
 
@@ -259,9 +261,14 @@ class MemberSerializer(serializers.ModelSerializer):
         return _money(member.total_due)
 
     def get_membership(self, member):
-        # Members are loaded with their active membership prefetched as `active_memberships`.
-        memberships = member.active_memberships
-        return MembershipSerializer(memberships[0]).data if memberships else None
+        """The current plan (members are loaded by MemberService.get_members)."""
+        current, _ = MemberService.current_and_next(member)
+        return MembershipSerializer(current).data if current else None
+
+    def get_next_membership(self, member):
+        """A renewed-early plan that starts after the current one."""
+        _, next_plan = MemberService.current_and_next(member)
+        return MembershipSerializer(next_plan).data if next_plan else None
 
     def validate_membership_plan_id(self, value):
         plan = (
@@ -495,9 +502,9 @@ class ChangePasswordSerializer(serializers.Serializer):
 
 
 class MembershipActionSerializer(serializers.Serializer):
-    """Renew (any plan, starts after the current one) or change plan mid-way (starts today)."""
+    """Renew (rejoining), change plan (replaces the current one) or renew early (adds the next plan)."""
 
-    action = serializers.ChoiceField(choices=["renew", "change_plan"])
+    action = serializers.ChoiceField(choices=["renew", "change_plan", "renew_early"])
     member_id = serializers.IntegerField()
     membership_plan_id = serializers.IntegerField()
     start_date = serializers.DateField(required=False)

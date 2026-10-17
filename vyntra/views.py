@@ -1,3 +1,4 @@
+from datetime import timedelta
 from decimal import Decimal
 
 from django.conf import settings
@@ -658,13 +659,12 @@ class MembershipView(APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
         member, plan = data["member_id"], data["membership_plan_id"]
-        if data["action"] == "renew" and MemberService.get_members(business_account_id).filter(
-            id=member.id, is_active=True, is_live=True
-        ).exists():
-            return Response(
-                {"detail": "This member already has an active plan. Use Change Plan or Extend instead."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        loaded = MemberService.get_members(business_account_id).get(id=member.id)
+        current, next_plan = MemberService.current_and_next(loaded)
+        live = loaded.is_active and loaded.is_live
+        error = self.action_error(data, live, current, next_plan)
+        if error:
+            return Response({"detail": error}, status=status.HTTP_400_BAD_REQUEST)
         discount = data.get("discount", Decimal("0"))
 
         with transaction.atomic():
@@ -672,16 +672,72 @@ class MembershipView(APIView):
                 member.is_active = True
                 member.save()
                 ActivityService.log(member, "MEMBER_REACTIVATED", "Reactivated", request.user)
-            start_date = data.get("start_date") or timezone.localdate()
-            if data["action"] == "renew":
+            if data["action"] == "renew_early":
+                start_date = data.get("start_date") or current.end_date + timedelta(days=1)
+                membership = MembershipService.renew_early(
+                    member, current, plan, start_date, discount, request.user
+                )
+            elif data["action"] == "renew":
+                start_date = data.get("start_date") or timezone.localdate()
                 membership = MembershipService.renew(member, plan, start_date, discount, request.user)
             else:
+                start_date = data.get("start_date") or timezone.localdate()
                 membership = MembershipService.change_plan(member, plan, start_date, discount, request.user)
             if data.get("payment"):
                 PaymentService.create(member, membership, data["payment"], request.user)
 
         member = MemberService.get_members(business_account_id).get(id=member.id)
         return Response(MemberSerializer(member).data, status=status.HTTP_201_CREATED)
+
+    def action_error(self, data, live, current, next_plan):
+        """Why a renew / change / renew-early request isn't allowed for this member, or None."""
+        today = timezone.localdate()
+        if data["action"] == "renew" and live:
+            return "This member already has an active plan. Use Change Plan or Extend instead."
+        if data["action"] == "change_plan" and next_plan:
+            return f"This member has a next plan starting {next_plan.start_date:%d %b %Y}. Cancel it first."
+        if data["action"] == "renew_early":
+            if not live or current is None:
+                return "Renew Early is for members with an active plan. Use Renew instead."
+            if next_plan:
+                return f"This member already has a next plan starting {next_plan.start_date:%d %b %Y}."
+            days_left = (current.end_date - today).days
+            if days_left > MemberService.RENEW_EARLY_DAYS:
+                return (
+                    f"Renew Early opens {MemberService.RENEW_EARLY_DAYS} days before the plan ends "
+                    f"(this one ends {current.end_date:%d %b %Y})."
+                )
+            start_date = data.get("start_date")
+            if start_date and start_date <= current.end_date:
+                return f"The next plan must start after the current one ends ({current.end_date:%d %b %Y})."
+        return None
+
+    def delete(self, request):
+        """Cancels a renewed-early next plan that has no payments yet."""
+        membership = self.get_membership(request)
+        loaded = MemberService.get_members(membership.business_account_id).get(id=membership.member_id)
+        current, next_plan = MemberService.current_and_next(loaded)
+        if next_plan is None or next_plan.id != membership.id:
+            return Response({"detail": "Only an upcoming next plan can be cancelled."}, status=status.HTTP_400_BAD_REQUEST)
+        if next_plan.active_payments:
+            return Response(
+                {"detail": "This plan has payments. Delete them first, then cancel the plan."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        with transaction.atomic():
+            MembershipService.cancel_next(loaded, current, next_plan, request.user)
+        return Response(MemberSerializer(MemberService.get_members(membership.business_account_id).get(id=loaded.id)).data)
+
+    def get_membership(self, request):
+        query = MembershipDetailQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        params = query.validated_data
+        BusinessAccountService.check_admin_access(request.user, params["business_account_id"])
+        return get_object_or_404(
+            Membership.objects.select_related("membership_plan__duration_type", "member"),
+            id=params["membership_id"],
+            business_account_id=params["business_account_id"],
+        )
 
     def put(self, request):
         query = MembershipDetailQuerySerializer(data=request.query_params)
@@ -697,6 +753,19 @@ class MembershipView(APIView):
         serializer = MembershipUpdateSerializer(data=request.data, context={"membership": membership})
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+
+        # A next plan can't be moved to start before the current one ends.
+        if data.get("start_date") and membership.start_date > timezone.localdate():
+            running = Membership.objects.filter(
+                member_id=membership.member_id,
+                start_date__lte=timezone.localdate(),
+                end_date__gte=timezone.localdate(),
+            ).exclude(id=membership.id).first()
+            if running and data["start_date"] <= running.end_date:
+                return Response(
+                    {"start_date": [f"Must be after the current plan ends ({running.end_date:%d %b %Y})."]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         with transaction.atomic():
             MembershipService.update(
