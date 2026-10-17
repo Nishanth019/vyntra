@@ -100,6 +100,10 @@ DATABASES = {
 # The platform terminates HTTPS at its load balancer and forwards plain HTTP.
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
+# Django admin (a browser form) posts over HTTPS from the deployed hosts.
+CSRF_TRUSTED_ORIGINS = [f"https://{host}" for host in ALLOWED_HOSTS if host not in ("localhost", "127.0.0.1")]
+SESSION_COOKIE_SECURE = CSRF_COOKIE_SECURE = not DEBUG and bool(CSRF_TRUSTED_ORIGINS)
+
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [

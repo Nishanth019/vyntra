@@ -204,6 +204,7 @@ class Staff(TimeStampedModel):
     class Meta:
         managed = False
         db_table = "staff"
+        verbose_name_plural = "staff"
         constraints = [
             models.UniqueConstraint(
                 fields=["business_account", "employee_code"],
@@ -369,6 +370,7 @@ class MemberAttendance(TimeStampedModel):
     class Meta:
         managed = False
         db_table = "member_attendance"
+        verbose_name_plural = "member attendance"
         constraints = [
             models.UniqueConstraint(
                 fields=["member", "attendance_date"],
@@ -425,6 +427,7 @@ class MemberActivity(TimeStampedModel):
     class Meta:
         managed = False
         db_table = "member_activity"
+        verbose_name_plural = "member activity"
 
 
 class BusinessAdminDevice(TimeStampedModel):
