@@ -12,7 +12,7 @@ from django.db.models import Count, DecimalField, Exists, F, OuterRef, Prefetch,
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from rest_framework.authentication import BaseAuthentication, get_authorization_header
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from .models import (
     BusinessAccount,
@@ -355,14 +355,22 @@ class MembershipService:
         return membership
 
     @classmethod
+    def discard(cls, membership, admin):
+        """
+        Removes a plan as if it never existed: its payments are deleted (they stop counting in
+        collections and dues) and stay only as voided records; the timeline keeps the story.
+        """
+        for payment in Payment.objects.filter(membership=membership, is_active=True):
+            PaymentService.void(payment, admin)
+        Payment.objects.filter(membership=membership).update(membership=None)
+        MemberActivity.objects.filter(membership=membership).update(membership=None)
+        membership.delete()
+
+    @classmethod
     def cancel_next(cls, member, current, next_plan, admin):
         """Removes a future plan; its payments are deleted with it (e.g. refunded). `current` is active again."""
-        for payment in Payment.objects.filter(membership=next_plan, is_active=True):
-            PaymentService.void(payment, admin)
-        Payment.objects.filter(membership=next_plan).update(membership=None)
-        MemberActivity.objects.filter(membership=next_plan).update(membership=None)
         description = f"Future plan cancelled: {cls.describe(next_plan)}"
-        next_plan.delete()
+        cls.discard(next_plan, admin)
         current.is_active = True
         current.save()
         ActivityService.log(member, "PLAN_CHANGED", description, admin, membership=current)
@@ -370,20 +378,23 @@ class MembershipService:
     @classmethod
     def change_plan(cls, member, current, next_plan, plan, start_date, discount, admin):
         """
-        Replaces the current plan with a brand-new one from `start_date`. The old plan closes the day
-        before (it's history: its dues and payments no longer count). A future plan stays the active
-        one and moves later if the new plan would overlap it.
+        Replaces the current plan with a brand-new one from `start_date`. The old plan is removed
+        with its payments, so it no longer counts anywhere (collections, dues, plans sold, renewals).
+        A future plan stays the active one and moves later if the new plan would overlap it.
         """
-        old_name = current.membership_plan.name
-        current.end_date = max(current.start_date, start_date - timedelta(days=1))
-        current.save()
+        old = cls.describe(current)
+        paid = Payment.objects.filter(membership=current, is_active=True).aggregate(
+            total=Coalesce(Sum("amount"), _ZERO)
+        )["total"]
+        cls.discard(current, admin)
 
         membership = cls.create(member, plan, start_date, discount, active=next_plan is None)
         cls.push_later_plans(membership)
         ActivityService.log(
             member,
             "PLAN_CHANGED",
-            f"Plan changed from {old_name} to {cls.describe(membership)} (previous plan closed)",
+            f"Plan changed to {cls.describe(membership)}. Previous plan removed: {old}"
+            + (f", its {rupees(paid)} payments deleted" if paid else ""),
             admin,
             membership=membership,
         )
@@ -432,6 +443,15 @@ class PaymentService:
 
     @classmethod
     def create(cls, member, membership, data, admin):
+        """Records a payment; it can't be more than what's still due on the plan."""
+        if membership is not None:
+            due = cls.balance(membership)
+            if data["amount"] > due:
+                raise ValidationError(
+                    {"amount": f"Amount can't be more than the {rupees(due)} due on this plan."}
+                    if due > 0
+                    else {"amount": "Nothing is due on this plan."}
+                )
         data.setdefault("payment_date", timezone.now())
         payment = Payment.objects.create(
             **data,
@@ -451,6 +471,14 @@ class PaymentService:
             payment=payment,
         )
         return payment
+
+    @classmethod
+    def balance(cls, membership):
+        """What's still to be paid on a plan: amount − discount − active payments."""
+        paid = Payment.objects.filter(membership=membership, is_active=True).aggregate(
+            total=Coalesce(Sum("amount"), _ZERO)
+        )["total"]
+        return membership.amount - membership.discount - paid
 
     @classmethod
     def void(cls, payment, admin):

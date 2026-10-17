@@ -63,7 +63,13 @@ class ChangePlanTests(ApiTestCase):
         self.assertEqual(data["membership"]["start_date"], str(days(0)))
         self.assertEqual(data["total_due"], "2700.00")  # the ₹1,000 paid on the old plan doesn't count
         self.assertIsNone(data["next_membership"])
-        self.assertEqual(Membership.objects.get(id=old_id).end_date, days(-1))
+        # The old plan is gone with its payment: nothing of it counts in collections or history.
+        self.assertFalse(Membership.objects.filter(id=old_id).exists())
+        self.assertFalse(Payment.objects.filter(member_id=m["id"], is_active=True).exists())
+        collections = self.client.get(f"/api/v1/dashboard/{self.q}").data["collections"]
+        self.assertEqual(collections["today_collection"], "0.00")
+        plans = self.client.get(f"/api/v1/memberships/{self.q}&member_id={m['id']}").data["results"]
+        self.assertEqual([p["membership_plan"]["name"] for p in plans], ["Quarterly"])
 
     def test_change_plan_can_start_on_the_old_plans_start_date(self):
         m = self.add_member(days(-10))
@@ -87,6 +93,49 @@ class ChangePlanTests(ApiTestCase):
         response = self.action(m, "change_plan", plan=self.quarterly, start_date=days(5))
         self.assertEqual(response.status_code, 201, response.data)
         self.assertEqual(response.data["membership"]["membership_plan"]["name"], "Quarterly")
+
+
+class PaymentLimitTests(ApiTestCase):
+    def pay(self, member, amount):
+        return self.client.post(
+            f"/api/v1/payments/{self.q}",
+            {"member_id": member["id"], "amount": str(amount), "payment_method": "CASH"},
+            format="json",
+        )
+
+    def test_joining_payment_cannot_exceed_the_plan(self):
+        body = {
+            "member_code": "X1", "first_name": "Over", "membership_plan_id": self.monthly.id,
+            "start_date": str(days(0)), "discount": "100", "payment": {"amount": "950", "payment_method": "CASH"},
+        }
+        response = self.client.post(f"/api/v1/members/{self.q}", body, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("₹900", str(response.data))
+        self.assertEqual(self.members(), [])  # nothing saved
+
+    def test_payment_cannot_exceed_what_is_due(self):
+        m = self.add_member(days(0), paid=600)
+        self.assertEqual(self.pay(m, 401).status_code, 400)
+        self.assertEqual(self.pay(m, 400).status_code, 201)
+        response = self.pay(m, 1)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Nothing is due", str(response.data))
+
+    def test_payment_goes_to_the_current_plan_before_a_future_plan(self):
+        m = self.add_member(days(-26), paid=600)  # ₹400 due, ends in a few days
+        self.action(m, "renew_early")
+        self.assertEqual(self.pay(m, 400).status_code, 201)
+        data = self.member(m["id"])
+        self.assertEqual(data["total_due"], "0.00")
+        self.assertEqual(data["next_membership"]["amount_paid"], "0.00")
+        self.assertEqual(self.pay(m, 1000).status_code, 201)  # current is paid up: goes to the future plan
+        self.assertEqual(self.member(m["id"])["next_membership"]["amount_paid"], "1000.00")
+
+    def test_plan_action_payment_cannot_exceed_the_new_plan(self):
+        m = self.add_member(days(-40))
+        response = self.action(m, "renew", payment={"amount": "1001", "payment_method": "UPI"})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.member(m["id"])["status"], "expired")  # renewal rolled back
 
 
 class FuturePlanTests(ApiTestCase):

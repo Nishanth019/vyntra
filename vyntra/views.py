@@ -603,9 +603,11 @@ class PaymentView(APIView):
         data = serializer.validated_data
         member = data.pop("member_id")
         membership = data.pop("membership_id", None)
-        # Default to the member's current active membership so dues stay attributable.
+        # Default to the current plan (where dues count); once it's paid up, a waiting future plan.
         if membership is None:
-            membership = Membership.objects.filter(member=member, is_active=True).order_by("-id").first()
+            loaded = MemberService.get_members(business_account_id).get(id=member.id)
+            current, next_plan = MemberService.current_and_next(loaded)
+            membership = next_plan if next_plan and current and PaymentService.balance(current) <= 0 else current
         with transaction.atomic():
             payment = PaymentService.create(member, membership, data, request.user)
 
