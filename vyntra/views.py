@@ -71,6 +71,7 @@ from .serializers import (
     StaffDetailQuerySerializer,
     StaffListQuerySerializer,
     StaffSerializer,
+    normalize_mobile,
 )
 from .services import (
     ActivityService,
@@ -125,7 +126,10 @@ class LoginView(APIView):
         login = serializer.validated_data["login"].strip()
         password = serializer.validated_data["password"]
 
-        admin = BusinessAdmin.objects.filter(Q(email__iexact=login) | Q(phone=login)).first()
+        # Mobile numbers may be typed with +91, spaces or dashes; they're stored as 10 digits.
+        admin = BusinessAdmin.objects.filter(
+            Q(email__iexact=login) | Q(phone=login) | Q(phone=normalize_mobile(login))
+        ).first()
         if admin is None or not check_password(password, admin.password):
             return Response({"detail": "Invalid login or password."}, status=status.HTTP_401_UNAUTHORIZED)
         if not admin.is_active:

@@ -1,3 +1,4 @@
+import re
 from decimal import Decimal
 
 from django.contrib.auth.hashers import check_password
@@ -25,6 +26,30 @@ from .models import (
 )
 
 
+def normalize_mobile(value):
+    """Drops spaces, dashes and a +91 / 91 / 0 prefix, e.g. "+91 98765-43210" → "9876543210"."""
+    return re.sub(r"^(\+91|91(?=\d{10}$)|0(?=\d{10}$))", "", re.sub(r"[\s-]", "", value))
+
+
+class MobileField(serializers.CharField):
+    """
+    An Indian mobile number: 10 digits starting with 6–9. Spaces, dashes and a +91 / 91 / 0
+    prefix are accepted and dropped, so it's always stored as the bare 10 digits.
+    """
+
+    default_error_messages = {"invalid_mobile": "Enter a valid 10-digit mobile number."}
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("max_length", 20)
+        super().__init__(**kwargs)
+
+    def to_internal_value(self, data):
+        value = normalize_mobile(super().to_internal_value(data))
+        if not re.fullmatch(r"[6-9]\d{9}", value):
+            self.fail("invalid_mobile")
+        return value
+
+
 def _money(value):
     """Format a Decimal as a 2-place string, matching how DecimalField fields serialize."""
     return str(Decimal(value).quantize(Decimal("0.01")))
@@ -41,7 +66,7 @@ class BusinessAdminSerializer(serializers.ModelSerializer):
 
 class SignupSerializer(serializers.Serializer):
     full_name = serializers.CharField(max_length=200)
-    mobile_no = serializers.RegexField(r"^\d{10,15}$", error_messages={"invalid": "Enter a valid mobile number."})
+    mobile_no = MobileField()
     email = serializers.EmailField(max_length=255)
     password = serializers.CharField(write_only=True, max_length=128)
 
@@ -82,6 +107,7 @@ class BusinessAccountSerializer(serializers.ModelSerializer):
         error_messages={"does_not_exist": "Business type not found or inactive."},
     )
     logo_url = serializers.URLField(max_length=500, required=False, allow_null=True, allow_blank=True)
+    contact_no = MobileField(required=False, allow_null=True, allow_blank=True)
     email = serializers.EmailField(max_length=255, required=False, allow_null=True, allow_blank=True)
     website = serializers.URLField(max_length=500, required=False, allow_null=True, allow_blank=True)
 
@@ -214,6 +240,7 @@ class GymMemberSerializer(serializers.ModelSerializer):
 
 
 class MemberSerializer(serializers.ModelSerializer):
+    phone = MobileField(required=False, allow_null=True, allow_blank=True)
     email = serializers.EmailField(max_length=255, required=False, allow_null=True, allow_blank=True)
     membership_plan_id = serializers.IntegerField(write_only=True)
     start_date = serializers.DateField(write_only=True, required=False)
@@ -225,9 +252,7 @@ class MemberSerializer(serializers.ModelSerializer):
     emergency_contact_name = serializers.CharField(
         max_length=200, required=False, allow_null=True, allow_blank=True, write_only=True
     )
-    emergency_contact_phone = serializers.CharField(
-        max_length=20, required=False, allow_null=True, allow_blank=True, write_only=True
-    )
+    emergency_contact_phone = MobileField(required=False, allow_null=True, allow_blank=True, write_only=True)
     emergency_contact_address = serializers.CharField(
         max_length=500, required=False, allow_null=True, allow_blank=True, write_only=True
     )
@@ -309,6 +334,7 @@ class StaffDetailQuerySerializer(BusinessAccountQuerySerializer):
 
 
 class StaffSerializer(serializers.ModelSerializer):
+    phone = MobileField(required=False, allow_null=True, allow_blank=True)
     email = serializers.EmailField(max_length=255, required=False, allow_null=True, allow_blank=True)
 
     class Meta:
@@ -459,9 +485,7 @@ class AdminDetailQuerySerializer(BusinessAccountQuerySerializer):
 
 class BusinessAdminUpdateSerializer(serializers.ModelSerializer):
     full_name = serializers.CharField(source="name", max_length=200)
-    mobile_no = serializers.RegexField(
-        r"^\d{10,15}$", source="phone", error_messages={"invalid": "Enter a valid mobile number."}
-    )
+    mobile_no = MobileField(source="phone")
     email = serializers.EmailField(max_length=255)
     # Applies to the admin's access to this business (business_account_admin), not the admin globally.
     is_active = serializers.BooleanField(write_only=True, required=False)
