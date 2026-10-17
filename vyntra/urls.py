@@ -23,6 +23,7 @@ urlpatterns = [
     path("notifications/", views.NotificationView.as_view(), name="notifications"),
     path("notification-settings/", views.NotificationSettingView.as_view(), name="notification-settings"),
     path("devices/", views.DeviceView.as_view(), name="devices"),
+    path("devices/test/", views.DeviceTestView.as_view(), name="devices-test"),
     path("cron/daily/", views.DailyJobView.as_view(), name="cron-daily"),
     path("admins/", views.AdminView.as_view(), name="admins"),
     path("me/", views.MeView.as_view(), name="me"),

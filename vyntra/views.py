@@ -839,6 +839,23 @@ class DeviceView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+class DeviceTestView(APIView):
+    """Sends a test push to the logged-in admin's own phones."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        tokens = list(
+            BusinessAdminDevice.objects.filter(business_admin=request.user, is_active=True).values_list(
+                "push_token", flat=True
+            )
+        )
+        NotificationService.send_push(
+            tokens, "Test notification ✅", "Push notifications are working on this phone.", {}
+        )
+        return Response({"devices": len(tokens)})
+
+
 class DailyJobView(APIView):
     """
     Called by the scheduler (GitHub Actions) at 8 AM and 9 PM IST with ?run=morning|evening.
