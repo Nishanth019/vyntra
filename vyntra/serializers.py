@@ -111,6 +111,7 @@ class BusinessAccountQuerySerializer(serializers.Serializer):
 class MemberListQuerySerializer(BusinessAccountQuerySerializer):
     search = serializers.CharField(required=False)
     phone = serializers.CharField(required=False)
+    email = serializers.CharField(required=False)
     member_code = serializers.CharField(required=False)
     is_active = serializers.BooleanField(required=False, allow_null=True, default=None)
     # live: a membership covers today. expired: active member whose latest plan has ended.

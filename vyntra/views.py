@@ -243,6 +243,8 @@ class MemberView(APIView):
             )
         if params.get("phone"):
             members = members.filter(phone=params["phone"])
+        if params.get("email"):
+            members = members.filter(email__iexact=params["email"])
         if params.get("member_code"):
             members = members.filter(member_code=params["member_code"])
         members = MemberService.filter_members(members, params).distinct()
