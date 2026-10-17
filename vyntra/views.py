@@ -656,6 +656,13 @@ class MembershipView(APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
         member, plan = data["member_id"], data["membership_plan_id"]
+        if data["action"] == "renew" and MemberService.get_members(business_account_id).filter(
+            id=member.id, is_active=True, is_live=True
+        ).exists():
+            return Response(
+                {"detail": "This member already has an active plan. Use Change Plan or Extend instead."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         discount = data.get("discount", Decimal("0"))
 
         with transaction.atomic():
@@ -663,11 +670,11 @@ class MembershipView(APIView):
                 member.is_active = True
                 member.save()
                 ActivityService.log(member, "MEMBER_REACTIVATED", "Reactivated", request.user)
+            start_date = data.get("start_date") or timezone.localdate()
             if data["action"] == "renew":
-                start_date = data.get("start_date") or MembershipService.renewal_start_date(member)
                 membership = MembershipService.renew(member, plan, start_date, discount, request.user)
             else:
-                membership = MembershipService.change_plan(member, plan, discount, request.user)
+                membership = MembershipService.change_plan(member, plan, start_date, discount, request.user)
             if data.get("payment"):
                 PaymentService.create(member, membership, data["payment"], request.user)
 

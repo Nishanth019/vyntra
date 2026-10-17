@@ -50,19 +50,18 @@ def rupees(amount):
 
 
 def _member_due_expr():
-    """A member's total dues across all memberships: Σ(amount − discount) − Σ(active payments)."""
+    """A member's dues on their current (active) plan: amount − discount − its active payments."""
     payable = Subquery(
-        Membership.objects.filter(member_id=OuterRef("pk"))
-        .values("member_id")
-        .annotate(s=Sum(F("amount") - F("discount")))
-        .values("s"),
+        Membership.objects.filter(member_id=OuterRef("pk"), is_active=True)
+        .annotate(net=F("amount") - F("discount"))
+        .values("net")[:1],
         output_field=_MONEY,
     )
     paid = Subquery(
-        Payment.objects.filter(member_id=OuterRef("pk"), is_active=True)
-        .values("member_id")
+        Payment.objects.filter(membership__member_id=OuterRef("pk"), membership__is_active=True, is_active=True)
+        .values("membership_id")
         .annotate(s=Sum("amount"))
-        .values("s"),
+        .values("s")[:1],
         output_field=_MONEY,
     )
     return Coalesce(payable, _ZERO) - Coalesce(paid, _ZERO)
@@ -130,7 +129,7 @@ class BusinessAccountService:
 class MemberService:
     """
     A member has one `is_active` membership: their latest (current, upcoming or last expired).
-    Older ones stay as history and still count towards dues.
+    Dues come from it alone; older ones are history.
     """
 
     @classmethod
@@ -280,16 +279,8 @@ class MembershipService:
         )
 
     @classmethod
-    def renewal_start_date(cls, member):
-        """The day after the current plan ends if it's still running, otherwise today."""
-        today = timezone.localdate()
-        current = Membership.objects.filter(member=member, is_active=True).first()
-        if current and current.end_date >= today:
-            return current.end_date + timedelta(days=1)
-        return today
-
-    @classmethod
     def renew(cls, member, plan, start_date, discount, admin):
+        """Rejoining: a new plan for an expired / inactive member (or one without a plan)."""
         membership = cls.create(member, plan, start_date, discount)
         ActivityService.log(
             member, "MEMBERSHIP_RENEWED", f"Renewed: {cls.describe(membership)}", admin, membership=membership
@@ -297,28 +288,31 @@ class MembershipService:
         return membership
 
     @classmethod
-    def change_plan(cls, member, plan, discount, admin):
-        """Ends the current plan yesterday and starts the new one today (discount carries any credit)."""
-        today = timezone.localdate()
+    def change_plan(cls, member, plan, start_date, discount, admin):
+        """
+        Replaces the current plan with a brand-new one from `start_date`. The old plan ends the day
+        before and is history from then on: its dues and payments no longer count.
+        """
         current = Membership.objects.select_related("membership_plan").filter(member=member, is_active=True).first()
-        if current and current.start_date > today:
-            # An upcoming renewal hasn't been used yet: just swap its plan.
+        if current and current.start_date >= start_date:
+            # The current plan hadn't started by then: swap it in place.
             old_name = current.membership_plan.name
             current.membership_plan = plan
+            current.start_date = start_date
             current.amount = plan.amount
             current.discount = discount
-            current.end_date = MemberService.calculate_end_date(current.start_date, plan)
+            current.end_date = MemberService.calculate_end_date(start_date, plan)
             current.save()
             ActivityService.log(
-                member, "PLAN_CHANGED", f"Upcoming plan changed from {old_name} to {cls.describe(current)}", admin,
+                member, "PLAN_CHANGED", f"Plan changed from {old_name} to {cls.describe(current)}", admin,
                 membership=current,
             )
             return current
         if current:
-            current.end_date = max(current.start_date, today - timedelta(days=1))
+            current.end_date = start_date - timedelta(days=1)
             current.save()
 
-        membership = cls.create(member, plan, today, discount)
+        membership = cls.create(member, plan, start_date, discount)
         old_name = current.membership_plan.name if current else "no plan"
         ActivityService.log(
             member,
@@ -435,7 +429,7 @@ class PaymentService:
 
     @classmethod
     def outstanding_dues(cls, business_account_id):
-        """Σ of every member's positive dues (across all their memberships, past ones included)."""
+        """Σ of every member's positive dues on their current plan."""
         dues = MemberService.get_members(business_account_id).filter(total_due__gt=0)
         return dues.aggregate(total=Coalesce(Sum("total_due"), _ZERO))["total"]
 
@@ -769,7 +763,7 @@ class NotificationService:
                     and m.active_memberships[0].start_date <= week_ago
                 ]
                 if missing:
-                    cls.notify(business_account_id, "NO_SHOW", f"{len(missing)} live member(s) not seen this week",
+                    cls.notify(business_account_id, "NO_SHOW", f"{len(missing)} active member(s) not seen this week",
                                cls._names(missing), push=push_details, member_filter="live")
 
         # 5. Birthdays.
