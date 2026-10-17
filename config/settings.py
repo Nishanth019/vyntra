@@ -176,3 +176,6 @@ MAILERS = {
 
 # Daily notification jobs (/api/v1/cron/daily/). When set, callers must send it as X-Cron-Secret.
 CRON_SECRET = os.getenv("CRON_SECRET", "")
+
+# `python manage.py test` builds the unmanaged tables from sql/schema.sql.
+TEST_RUNNER = "config.test_runner.VyntraTestRunner"

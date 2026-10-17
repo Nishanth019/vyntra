@@ -661,8 +661,7 @@ class MembershipView(APIView):
         member, plan = data["member_id"], data["membership_plan_id"]
         loaded = MemberService.get_members(business_account_id).get(id=member.id)
         current, next_plan = MemberService.current_and_next(loaded)
-        live = loaded.is_active and loaded.is_live
-        error = self.action_error(data, live, current, next_plan)
+        error = self.action_error(data, loaded, current, next_plan)
         if error:
             return Response({"detail": error}, status=status.HTTP_400_BAD_REQUEST)
         discount = data.get("discount", Decimal("0"))
@@ -682,48 +681,63 @@ class MembershipView(APIView):
                 membership = MembershipService.renew(member, plan, start_date, discount, request.user)
             else:
                 start_date = data.get("start_date") or timezone.localdate()
-                membership = MembershipService.change_plan(member, plan, start_date, discount, request.user)
+                membership = MembershipService.change_plan(
+                    member, current, next_plan, plan, start_date, discount, request.user
+                )
             if data.get("payment"):
                 PaymentService.create(member, membership, data["payment"], request.user)
 
         member = MemberService.get_members(business_account_id).get(id=member.id)
         return Response(MemberSerializer(member).data, status=status.HTTP_201_CREATED)
 
-    def action_error(self, data, live, current, next_plan):
-        """Why a renew / change / renew-early request isn't allowed for this member, or None."""
+    def action_error(self, data, member, current, next_plan):
+        """Why a renew / change plan / future plan request isn't allowed for this member, or None."""
         today = timezone.localdate()
-        if data["action"] == "renew" and live:
-            return "This member already has an active plan. Use Change Plan or Extend instead."
-        if data["action"] == "change_plan" and next_plan:
-            return f"This member has a next plan starting {next_plan.start_date:%d %b %Y}. Cancel it first."
-        if data["action"] == "renew_early":
-            if not live or current is None:
-                return "Renew Early is for members with an active plan. Use Renew instead."
-            if next_plan:
-                return f"This member already has a next plan starting {next_plan.start_date:%d %b %Y}."
-            days_left = (current.end_date - today).days
-            if days_left > MemberService.RENEW_EARLY_DAYS:
+        start_date = data.get("start_date")
+        running = member.is_live  # a plan covers today (even if the member was deactivated)
+        upcoming = current is not None and current.start_date > today
+
+        if data["action"] == "renew":
+            if running and member.is_active:
+                return "This member already has an active plan. Use Change Plan or Extend instead."
+            if running:
+                return "This member's plan is still running. Reactivate them instead of renewing."
+            if upcoming:
+                return f"This member's plan starts {current.start_date:%d %b %Y}. Use Change Plan to replace it."
+            return None
+
+        if data["action"] == "change_plan":
+            if not member.is_active or current is None or not (running or upcoming):
+                return "Change Plan is for members with an active plan. Use Renew instead."
+            earliest, latest = min(today, current.start_date), max(today, current.start_date)
+            if start_date and not earliest <= start_date <= latest:
                 return (
-                    f"Renew Early opens {MemberService.RENEW_EARLY_DAYS} days before the plan ends "
-                    f"(this one ends {current.end_date:%d %b %Y})."
+                    f"The new plan must start between {earliest:%d %b %Y} and {latest:%d %b %Y}. "
+                    "To add a plan after the current one, use Add Future Plan."
                 )
-            start_date = data.get("start_date")
-            if start_date and start_date <= current.end_date:
-                return f"The next plan must start after the current one ends ({current.end_date:%d %b %Y})."
+            return None
+
+        # Add Future Plan (renew early).
+        if not member.is_active or not running or current is None:
+            return "Add Future Plan is for members with an active plan. Use Renew instead."
+        if next_plan:
+            return f"This member already has a future plan starting {next_plan.start_date:%d %b %Y}."
+        if (current.end_date - today).days > MemberService.RENEW_EARLY_DAYS:
+            return (
+                f"A future plan can be added in the last {MemberService.RENEW_EARLY_DAYS} days of the current "
+                f"plan (this one ends {current.end_date:%d %b %Y})."
+            )
+        if start_date and start_date <= current.end_date:
+            return f"The future plan must start after the current one ends ({current.end_date:%d %b %Y})."
         return None
 
     def delete(self, request):
-        """Cancels a renewed-early next plan that has no payments yet."""
+        """Cancels a member's future plan (its payments are deleted with it)."""
         membership = self.get_membership(request)
         loaded = MemberService.get_members(membership.business_account_id).get(id=membership.member_id)
         current, next_plan = MemberService.current_and_next(loaded)
         if next_plan is None or next_plan.id != membership.id:
-            return Response({"detail": "Only an upcoming next plan can be cancelled."}, status=status.HTTP_400_BAD_REQUEST)
-        if next_plan.active_payments:
-            return Response(
-                {"detail": "This plan has payments. Delete them first, then cancel the plan."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"detail": "Only a future plan can be cancelled."}, status=status.HTTP_400_BAD_REQUEST)
         with transaction.atomic():
             MembershipService.cancel_next(loaded, current, next_plan, request.user)
         return Response(MemberSerializer(MemberService.get_members(membership.business_account_id).get(id=loaded.id)).data)

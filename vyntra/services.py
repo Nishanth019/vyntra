@@ -51,13 +51,17 @@ def rupees(amount):
 
 def _current_membership_expr():
     """
-    A member's current plan: the latest one that has started (running or last expired), or their
-    only plan when it hasn't started yet. A renewed-early next plan isn't current until it starts.
+    A member's current plan: the active one once it has started, else the latest one that has
+    started (e.g. while a future plan waits), else their only plan when it hasn't started yet.
     """
     today = timezone.localdate()
-    started = Membership.objects.filter(member_id=OuterRef("pk"), start_date__lte=today).order_by("-start_date", "-id")
     active = Membership.objects.filter(member_id=OuterRef("pk"), is_active=True)
-    return Coalesce(Subquery(started.values("id")[:1]), Subquery(active.values("id")[:1]))
+    started = Membership.objects.filter(member_id=OuterRef("pk"), start_date__lte=today).order_by("-start_date", "-id")
+    return Coalesce(
+        Subquery(active.filter(start_date__lte=today).values("id")[:1]),
+        Subquery(started.values("id")[:1]),
+        Subquery(active.values("id")[:1]),
+    )
 
 
 def _member_due_expr():
@@ -179,11 +183,13 @@ class MemberService:
 
     @classmethod
     def current_and_next(cls, member):
-        """(current plan, renewed-early next plan or None) for a member loaded by get_members."""
+        """(current plan, future plan or None) for a member loaded by get_members."""
         active = member.active_memberships[0] if member.active_memberships else None
         running = member.running_memberships[0] if member.running_memberships else None
         if running and active and active.id != running.id and active.start_date > running.end_date:
             return running, active
+        if active and active.start_date <= timezone.localdate():
+            return active, None
         return running or active, None
 
     @classmethod
@@ -293,9 +299,13 @@ class MembershipService:
         return text
 
     @classmethod
-    def create(cls, member, plan, start_date, discount=Decimal("0")):
-        """The member's new active membership; the previous one stays as history."""
-        Membership.objects.filter(member=member, is_active=True).update(is_active=False)
+    def create(cls, member, plan, start_date, discount=Decimal("0"), active=True):
+        """
+        A new membership. Normally it becomes the active (latest) one and the previous one is history;
+        `active=False` keeps a waiting future plan as the active one.
+        """
+        if active:
+            Membership.objects.filter(member=member, is_active=True).update(is_active=False)
         return Membership.objects.create(
             business_account_id=member.business_account_id,
             member=member,
@@ -304,8 +314,22 @@ class MembershipService:
             end_date=MemberService.calculate_end_date(start_date, plan),
             amount=plan.amount,
             discount=discount,
-            is_active=True,
+            is_active=active,
         )
+
+    @classmethod
+    def push_later_plans(cls, membership):
+        """Moves any later plan of the member to start after `membership` ends, so plans never overlap."""
+        # Only a waiting future plan (it's the active one) moves; closed plans are history.
+        later = Membership.objects.filter(
+            member_id=membership.member_id, is_active=True, start_date__gt=membership.start_date
+        ).exclude(id=membership.id)
+        for plan in later:
+            if plan.start_date <= membership.end_date:
+                shift = (membership.end_date + timedelta(days=1)) - plan.start_date
+                plan.start_date += shift
+                plan.end_date += shift
+                plan.save()
 
     @classmethod
     def renew(cls, member, plan, start_date, discount, admin):
@@ -318,12 +342,12 @@ class MembershipService:
 
     @classmethod
     def renew_early(cls, member, current, plan, start_date, discount, admin):
-        """Adds the next plan after a running one; it becomes current on `start_date`."""
+        """Adds a future plan after the running one; it becomes current on `start_date`."""
         membership = cls.create(member, plan, start_date, discount)
         ActivityService.log(
             member,
             "MEMBERSHIP_RENEWED",
-            f"Renewed early (current {current.membership_plan.name} ends {current.end_date:%d %b %Y}): "
+            f"Future plan added (after {current.membership_plan.name} ending {current.end_date:%d %b %Y}): "
             f"{cls.describe(membership)}",
             admin,
             membership=membership,
@@ -332,45 +356,34 @@ class MembershipService:
 
     @classmethod
     def cancel_next(cls, member, current, next_plan, admin):
-        """Removes a renewed-early next plan (only while it has no payments); `current` is active again."""
+        """Removes a future plan; its payments are deleted with it (e.g. refunded). `current` is active again."""
+        for payment in Payment.objects.filter(membership=next_plan, is_active=True):
+            PaymentService.void(payment, admin)
+        Payment.objects.filter(membership=next_plan).update(membership=None)
         MemberActivity.objects.filter(membership=next_plan).update(membership=None)
-        description = f"Next plan cancelled: {cls.describe(next_plan)}"
+        description = f"Future plan cancelled: {cls.describe(next_plan)}"
         next_plan.delete()
         current.is_active = True
         current.save()
         ActivityService.log(member, "PLAN_CHANGED", description, admin, membership=current)
 
     @classmethod
-    def change_plan(cls, member, plan, start_date, discount, admin):
+    def change_plan(cls, member, current, next_plan, plan, start_date, discount, admin):
         """
-        Replaces the current plan with a brand-new one from `start_date`. The old plan ends the day
-        before and is history from then on: its dues and payments no longer count.
+        Replaces the current plan with a brand-new one from `start_date`. The old plan closes the day
+        before (it's history: its dues and payments no longer count). A future plan stays the active
+        one and moves later if the new plan would overlap it.
         """
-        current = Membership.objects.select_related("membership_plan").filter(member=member, is_active=True).first()
-        if current and current.start_date >= start_date:
-            # The current plan hadn't started by then: swap it in place.
-            old_name = current.membership_plan.name
-            current.membership_plan = plan
-            current.start_date = start_date
-            current.amount = plan.amount
-            current.discount = discount
-            current.end_date = MemberService.calculate_end_date(start_date, plan)
-            current.save()
-            ActivityService.log(
-                member, "PLAN_CHANGED", f"Plan changed from {old_name} to {cls.describe(current)}", admin,
-                membership=current,
-            )
-            return current
-        if current:
-            current.end_date = start_date - timedelta(days=1)
-            current.save()
+        old_name = current.membership_plan.name
+        current.end_date = max(current.start_date, start_date - timedelta(days=1))
+        current.save()
 
-        membership = cls.create(member, plan, start_date, discount)
-        old_name = current.membership_plan.name if current else "no plan"
+        membership = cls.create(member, plan, start_date, discount, active=next_plan is None)
+        cls.push_later_plans(membership)
         ActivityService.log(
             member,
             "PLAN_CHANGED",
-            f"Plan changed from {old_name} to {cls.describe(membership)}",
+            f"Plan changed from {old_name} to {cls.describe(membership)} (previous plan closed)",
             admin,
             membership=membership,
         )
@@ -381,11 +394,8 @@ class MembershipService:
         old_end = membership.end_date
         membership.end_date = old_end + timedelta(days=days)
         membership.save()
-        # A renewed-early next plan moves out by the same days so the plans never overlap.
-        for later in Membership.objects.filter(member_id=membership.member_id, start_date__gt=old_end):
-            later.start_date += timedelta(days=days)
-            later.end_date += timedelta(days=days)
-            later.save()
+        # A future plan moves out so the plans never overlap.
+        cls.push_later_plans(membership)
         text = f"Extended by {days} day{'' if days == 1 else 's'}: {old_end:%d %b %Y} → {membership.end_date:%d %b %Y}"
         ActivityService.log(
             membership.member, "MEMBERSHIP_EXTENDED", text + (f" ({reason})" if reason else ""), admin,
@@ -406,6 +416,7 @@ class MembershipService:
             membership.discount = discount
         if changes:
             membership.save()
+            cls.push_later_plans(membership)
             ActivityService.log(
                 membership.member,
                 "MEMBERSHIP_UPDATED",
