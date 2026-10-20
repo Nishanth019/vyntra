@@ -30,7 +30,7 @@ class ApiTestCase(TestCase):
         )
         self.account = BusinessAccount.objects.create(business_type=BusinessType.objects.get(code="GYM"), name="Gym")
         BusinessAccountAdmin.objects.create(
-            business_account=self.account, business_admin=self.admin, role="ADMIN", is_active=True
+            business_account=self.account, business_admin=self.admin, role="OWNER", is_active=True
         )
         month = DurationType.objects.get(code="MONTH")
         self.monthly = MembershipPlan.objects.create(

@@ -1,3 +1,5 @@
+import hmac
+import json
 from datetime import timedelta
 from decimal import Decimal
 
@@ -29,7 +31,9 @@ from .models import (
     Notification,
     Payment,
     Staff,
+    Subscription,
 )
+from .billing import GooglePlay, GooglePlayBilling, ProviderError, Razorpay, RazorpayBilling
 from .serializers import (
     AdminDetailQuerySerializer,
     BusinessAccountAdminSerializer,
@@ -71,6 +75,12 @@ from .serializers import (
     StaffDetailQuerySerializer,
     StaffListQuerySerializer,
     StaffSerializer,
+    GooglePlayConfirmSerializer,
+    PlanChoiceSerializer,
+    RazorpayConfirmSerializer,
+    SubscriptionPaymentSerializer,
+    SubscriptionPlanSerializer,
+    SubscriptionSummarySerializer,
     normalize_mobile,
 )
 from .services import (
@@ -84,6 +94,7 @@ from .services import (
     PaymentService,
     rupees,
 )
+from .subscriptions import OWNER, SubscriptionService, active_plans, hand_over_ownership
 
 
 def set_access_token_cookie(response, access_token):
@@ -109,6 +120,7 @@ class SignupView(APIView):
             email=data["email"],
             password=make_password(data["password"]),
         )
+        SubscriptionService.for_admin(admin)  # starts the free trial
         access_token = BusinessAdminAuthService.generate_access_token(admin)
 
         response = Response(
@@ -172,47 +184,56 @@ class BusinessAccountListView(APIView):
 
     def get(self, request):
         accounts = BusinessAccountService.get_accounts_for_admin(request.user)
-        return Response({"results": BusinessAccountSerializer(accounts, many=True).data})
+        return Response(
+            {"results": BusinessAccountSerializer(accounts, many=True, context={"admin": request.user}).data}
+        )
 
     def post(self, request):
         serializer = BusinessAccountSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        SubscriptionService.check_can_create_business(request.user)
 
         with transaction.atomic():
             account = BusinessAccount.objects.create(**serializer.validated_data)
             BusinessAccountAdmin.objects.create(
                 business_account=account,
                 business_admin=request.user,
-                role="ADMIN",
+                role=OWNER,
                 is_active=True,
             )
 
-        return Response(BusinessAccountSerializer(account).data, status=status.HTTP_201_CREATED)
+        data = BusinessAccountSerializer(account, context={"admin": request.user}).data
+        return Response(data, status=status.HTTP_201_CREATED)
 
 
 class BusinessAccountDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, id):
-        account = get_object_or_404(BusinessAccountService.get_accounts_for_admin(request.user), id=id)
-        return Response(BusinessAccountSerializer(account).data)
+        account = self.get_account(request, id)
+        return Response(BusinessAccountSerializer(account, context={"admin": request.user}).data)
 
     def put(self, request, id):
-        account = get_object_or_404(BusinessAccountService.get_accounts_for_admin(request.user), id=id)
+        account = self.get_account(request, id)
 
         serializer = BusinessAccountUpdateSerializer(account, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
 
-        return Response(BusinessAccountSerializer(account).data)
+        return Response(BusinessAccountSerializer(account, context={"admin": request.user}).data)
 
     def delete(self, request, id):
-        account = get_object_or_404(BusinessAccountService.get_accounts_for_admin(request.user), id=id)
+        account = self.get_account(request, id)
 
         account.is_active = False
         account.save()
 
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+    def get_account(self, request, id):
+        account = get_object_or_404(BusinessAccountService.get_accounts_for_admin(request.user), id=id)
+        BusinessAccountService.check_admin_access(request, account.id)
+        return account
 
 
 class MemberView(APIView):
@@ -234,7 +255,7 @@ class MemberView(APIView):
         query = MemberListQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         params = query.validated_data
-        BusinessAccountService.check_admin_access(request.user, params["business_account_id"])
+        BusinessAccountService.check_admin_access(request, params["business_account_id"])
 
         members = MemberService.get_members(params["business_account_id"]).order_by("-id")
         if params.get("search"):
@@ -262,7 +283,7 @@ class MemberView(APIView):
         query = BusinessAccountQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         business_account_id = query.validated_data["business_account_id"]
-        BusinessAccountService.check_admin_access(request.user, business_account_id)
+        BusinessAccountService.check_admin_access(request, business_account_id)
 
         serializer = MemberSerializer(data=request.data, context={"business_account_id": business_account_id})
         serializer.is_valid(raise_exception=True)
@@ -342,7 +363,7 @@ class MemberView(APIView):
         query = MemberDetailQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         params = query.validated_data
-        BusinessAccountService.check_admin_access(request.user, params["business_account_id"])
+        BusinessAccountService.check_admin_access(request, params["business_account_id"])
 
         return get_object_or_404(MemberService.get_members(params["business_account_id"]), id=params["member_id"])
 
@@ -381,7 +402,7 @@ class StaffView(APIView):
         query = StaffListQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         params = query.validated_data
-        BusinessAccountService.check_admin_access(request.user, params["business_account_id"])
+        BusinessAccountService.check_admin_access(request, params["business_account_id"])
 
         staff = Staff.objects.filter(business_account_id=params["business_account_id"]).order_by("-id")
         if params.get("search"):
@@ -408,7 +429,7 @@ class StaffView(APIView):
         query = BusinessAccountQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         business_account_id = query.validated_data["business_account_id"]
-        BusinessAccountService.check_admin_access(request.user, business_account_id)
+        BusinessAccountService.check_admin_access(request, business_account_id)
 
         serializer = StaffSerializer(data=request.data, context={"business_account_id": business_account_id})
         serializer.is_valid(raise_exception=True)
@@ -435,7 +456,7 @@ class StaffView(APIView):
         query = StaffDetailQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         params = query.validated_data
-        BusinessAccountService.check_admin_access(request.user, params["business_account_id"])
+        BusinessAccountService.check_admin_access(request, params["business_account_id"])
 
         return get_object_or_404(Staff, id=params["staff_id"], business_account_id=params["business_account_id"])
 
@@ -451,7 +472,7 @@ class MembershipPlanView(APIView):
         query = BusinessAccountQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         business_account_id = query.validated_data["business_account_id"]
-        BusinessAccountService.check_admin_access(request.user, business_account_id)
+        BusinessAccountService.check_admin_access(request, business_account_id)
 
         plans = (
             MembershipPlan.objects.select_related("duration_type")
@@ -467,7 +488,7 @@ class MembershipPlanView(APIView):
         query = BusinessAccountQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         business_account_id = query.validated_data["business_account_id"]
-        BusinessAccountService.check_admin_access(request.user, business_account_id)
+        BusinessAccountService.check_admin_access(request, business_account_id)
 
         serializer = MembershipPlanSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -488,7 +509,7 @@ class MembershipPlanView(APIView):
         query = MembershipPlanDetailQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         params = query.validated_data
-        BusinessAccountService.check_admin_access(request.user, params["business_account_id"])
+        BusinessAccountService.check_admin_access(request, params["business_account_id"])
 
         return get_object_or_404(
             MembershipPlan.objects.select_related("duration_type"),
@@ -508,7 +529,7 @@ class MemberAttendanceView(APIView):
         query = MemberAttendanceListQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         params = query.validated_data
-        BusinessAccountService.check_admin_access(request.user, params["business_account_id"])
+        BusinessAccountService.check_admin_access(request, params["business_account_id"])
 
         attendances = (
             MemberAttendance.objects.select_related("member")
@@ -528,7 +549,7 @@ class MemberAttendanceView(APIView):
         query = BusinessAccountQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         business_account_id = query.validated_data["business_account_id"]
-        BusinessAccountService.check_admin_access(request.user, business_account_id)
+        BusinessAccountService.check_admin_access(request, business_account_id)
 
         serializer = MemberAttendanceSerializer(data=request.data, context={"business_account_id": business_account_id})
         serializer.is_valid(raise_exception=True)
@@ -558,7 +579,7 @@ class MemberAttendanceView(APIView):
         query = MemberAttendanceDetailQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         params = query.validated_data
-        BusinessAccountService.check_admin_access(request.user, params["business_account_id"])
+        BusinessAccountService.check_admin_access(request, params["business_account_id"])
 
         return get_object_or_404(
             MemberAttendance.objects.select_related("member"),
@@ -578,7 +599,7 @@ class PaymentView(APIView):
         query = PaymentListQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         params = query.validated_data
-        BusinessAccountService.check_admin_access(request.user, params["business_account_id"])
+        BusinessAccountService.check_admin_access(request, params["business_account_id"])
 
         payments = (
             Payment.objects.select_related("membership")
@@ -600,7 +621,7 @@ class PaymentView(APIView):
         query = BusinessAccountQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         business_account_id = query.validated_data["business_account_id"]
-        BusinessAccountService.check_admin_access(request.user, business_account_id)
+        BusinessAccountService.check_admin_access(request, business_account_id)
 
         serializer = PaymentCreateSerializer(data=request.data, context={"business_account_id": business_account_id})
         serializer.is_valid(raise_exception=True)
@@ -631,7 +652,7 @@ class PaymentView(APIView):
         query = PaymentDetailQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         params = query.validated_data
-        BusinessAccountService.check_admin_access(request.user, params["business_account_id"])
+        BusinessAccountService.check_admin_access(request, params["business_account_id"])
         return get_object_or_404(
             Payment.objects.select_related("membership", "member"),
             id=params["payment_id"],
@@ -648,7 +669,7 @@ class MembershipView(APIView):
         query = MembershipListQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         params = query.validated_data
-        BusinessAccountService.check_admin_access(request.user, params["business_account_id"])
+        BusinessAccountService.check_admin_access(request, params["business_account_id"])
 
         memberships = MemberService.get_memberships(params["business_account_id"], params["member_id"])
         paginator = PageNumberPagination()
@@ -659,7 +680,7 @@ class MembershipView(APIView):
         query = BusinessAccountQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         business_account_id = query.validated_data["business_account_id"]
-        BusinessAccountService.check_admin_access(request.user, business_account_id)
+        BusinessAccountService.check_admin_access(request, business_account_id)
 
         serializer = MembershipActionSerializer(data=request.data, context={"business_account_id": business_account_id})
         serializer.is_valid(raise_exception=True)
@@ -752,7 +773,7 @@ class MembershipView(APIView):
         query = MembershipDetailQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         params = query.validated_data
-        BusinessAccountService.check_admin_access(request.user, params["business_account_id"])
+        BusinessAccountService.check_admin_access(request, params["business_account_id"])
         return get_object_or_404(
             Membership.objects.select_related("membership_plan__duration_type", "member"),
             id=params["membership_id"],
@@ -763,7 +784,7 @@ class MembershipView(APIView):
         query = MembershipDetailQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         params = query.validated_data
-        BusinessAccountService.check_admin_access(request.user, params["business_account_id"])
+        BusinessAccountService.check_admin_access(request, params["business_account_id"])
         membership = get_object_or_404(
             Membership.objects.select_related("membership_plan__duration_type", "member"),
             id=params["membership_id"],
@@ -807,7 +828,7 @@ class MemberActivityView(APIView):
         query = MembershipListQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         params = query.validated_data
-        BusinessAccountService.check_admin_access(request.user, params["business_account_id"])
+        BusinessAccountService.check_admin_access(request, params["business_account_id"])
 
         activities = (
             MemberActivity.objects.select_related("created_by_business_admin")
@@ -828,7 +849,7 @@ class DashboardView(APIView):
         query = BusinessAccountQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         business_account_id = query.validated_data["business_account_id"]
-        BusinessAccountService.check_admin_access(request.user, business_account_id)
+        BusinessAccountService.check_admin_access(request, business_account_id)
 
         return Response({
             "members": MemberService.get_counts(business_account_id),
@@ -850,7 +871,7 @@ class InsightsView(APIView):
         query = InsightsQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         params = query.validated_data
-        BusinessAccountService.check_admin_access(request.user, params["business_account_id"])
+        BusinessAccountService.check_admin_access(request, params["business_account_id"])
 
         return Response(
             InsightsService.get_insights(params["business_account_id"], params["date_from"], params["date_to"])
@@ -866,7 +887,7 @@ class NotificationView(APIView):
         query = BusinessAccountQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         business_account_id = query.validated_data["business_account_id"]
-        BusinessAccountService.check_admin_access(request.user, business_account_id)
+        BusinessAccountService.check_admin_access(request, business_account_id)
 
         notifications = Notification.objects.filter(
             business_account_id=business_account_id, business_admin=request.user
@@ -879,7 +900,7 @@ class NotificationView(APIView):
         query = NotificationReadSerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         params = query.validated_data
-        BusinessAccountService.check_admin_access(request.user, params["business_account_id"])
+        BusinessAccountService.check_admin_access(request, params["business_account_id"], allow_read_only=True)
 
         notifications = Notification.objects.filter(
             business_account_id=params["business_account_id"], business_admin=request.user, is_read=False
@@ -908,7 +929,7 @@ class NotificationSettingView(APIView):
         query = BusinessAccountQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         business_account_id = query.validated_data["business_account_id"]
-        BusinessAccountService.check_admin_access(request.user, business_account_id)
+        BusinessAccountService.check_admin_access(request, business_account_id, allow_read_only=True)
         return NotificationService.get_setting(business_account_id)
 
 
@@ -981,7 +1002,7 @@ class CollectionsView(APIView):
         query = CollectionsQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         params = query.validated_data
-        BusinessAccountService.check_admin_access(request.user, params["business_account_id"])
+        BusinessAccountService.check_admin_access(request, params["business_account_id"])
 
         summary = PaymentService.get_collections_summary(
             params["business_account_id"],
@@ -1004,7 +1025,7 @@ class AdminView(APIView):
         query = BusinessAccountQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         business_account_id = query.validated_data["business_account_id"]
-        BusinessAccountService.check_admin_access(request.user, business_account_id)
+        BusinessAccountService.check_admin_access(request, business_account_id)
 
         account_admins = (
             BusinessAccountAdmin.objects.select_related("business_admin")
@@ -1017,7 +1038,7 @@ class AdminView(APIView):
         query = BusinessAccountQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         business_account_id = query.validated_data["business_account_id"]
-        BusinessAccountService.check_admin_access(request.user, business_account_id)
+        BusinessAccountService.check_admin_access(request, business_account_id)
 
         serializer = SignupSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -1047,6 +1068,9 @@ class AdminView(APIView):
         )
         serializer.is_valid(raise_exception=True)
         is_active = serializer.validated_data.pop("is_active", None)
+        if is_active is False and account_admin.role == OWNER:
+            return Response({"detail": "The owner of the business can't be removed."},
+                            status=status.HTTP_400_BAD_REQUEST)
 
         with transaction.atomic():
             serializer.save()
@@ -1060,7 +1084,7 @@ class AdminView(APIView):
         query = AdminDetailQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         params = query.validated_data
-        BusinessAccountService.check_admin_access(request.user, params["business_account_id"])
+        BusinessAccountService.check_admin_access(request, params["business_account_id"])
 
         return get_object_or_404(
             BusinessAccountAdmin.objects.select_related("business_admin"),
@@ -1092,6 +1116,7 @@ class MeView(APIView):
         with transaction.atomic():
             admin = request.user
             BusinessAdminDevice.objects.filter(business_admin=admin).update(is_active=False)
+            hand_over_ownership(admin)
             BusinessAccountAdmin.objects.filter(business_admin=admin).update(is_active=False)
             admin.is_active = False
             admin.save()
@@ -1111,3 +1136,123 @@ class ChangePasswordView(APIView):
         request.user.save()
 
         return Response({"result": "Password updated."})
+
+
+def subscription_response(admin):
+    subscription = SubscriptionService.for_admin(admin)
+    payments = subscription.payments.select_related("plan")[:24]
+    return Response({
+        **SubscriptionSummarySerializer(SubscriptionService.summary(admin)).data,
+        "plans": SubscriptionPlanSerializer(active_plans(), many=True).data,
+        "payments": SubscriptionPaymentSerializer(payments, many=True).data,
+        "payment_options": {
+            "razorpay": Razorpay.is_configured(),
+            "google_play": GooglePlay.is_configured(),
+            "google_play_product_id": settings.GOOGLE_PLAY_PRODUCT_ID,
+        },
+    })
+
+
+class SubscriptionView(APIView):
+    """The login's trial or plan, the plans on sale, and past subscription payments."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return subscription_response(request.user)
+
+
+class SubscriptionCancelView(APIView):
+    """Turns off auto-renew. The days already paid for stay usable."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        subscription = SubscriptionService.for_admin(request.user)
+        if not subscription.auto_renew:
+            return Response({"detail": "Your plan isn't set to renew."}, status=status.HTTP_400_BAD_REQUEST)
+        if subscription.provider == Subscription.GOOGLE_PLAY:
+            return Response(
+                {"detail": "This plan was bought in Google Play. Cancel it in Play Store → Payments & "
+                           "subscriptions → Subscriptions."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if subscription.provider == Subscription.RAZORPAY:
+            RazorpayBilling.cancel(subscription)
+        else:
+            SubscriptionService.stop_renewal(subscription)
+        return subscription_response(request.user)
+
+
+class RazorpayCheckoutView(APIView):
+    """Creates a Razorpay subscription for the chosen plan; the website then opens Razorpay Checkout."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = PlanChoiceSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        checkout = RazorpayBilling.start_checkout(request.user, serializer.validated_data["plan"])
+        checkout["plan"] = SubscriptionPlanSerializer(checkout["plan"]).data
+        return Response(checkout, status=status.HTTP_201_CREATED)
+
+
+class RazorpayConfirmView(APIView):
+    """Verifies the checkout result so the plan unlocks immediately (the webhook confirms it again)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = RazorpayConfirmSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        RazorpayBilling.confirm_checkout(
+            request.user, data["razorpay_payment_id"], data["razorpay_subscription_id"], data["razorpay_signature"]
+        )
+        return subscription_response(request.user)
+
+
+class GooglePlayConfirmView(APIView):
+    """The Android app sends the purchase token right after a Google Play purchase."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = GooglePlayConfirmSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        GooglePlayBilling.confirm_purchase(request.user, serializer.validated_data["purchase_token"])
+        return subscription_response(request.user)
+
+
+class RazorpayWebhookView(APIView):
+    """Renewals, failures and cancellations from Razorpay, signed with the webhook secret."""
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        body = request.body
+        if not Razorpay.webhook_signature_matches(body, request.headers.get("X-Razorpay-Signature")):
+            return Response(status=status.HTTP_400_BAD_REQUEST)
+        try:
+            RazorpayBilling.handle_webhook(json.loads(body))
+        except ProviderError:
+            return Response(status=status.HTTP_503_SERVICE_UNAVAILABLE)  # Razorpay retries later
+        return Response(status=status.HTTP_200_OK)
+
+
+class GooglePlayWebhookView(APIView):
+    """Google Play real-time developer notifications, pushed by Pub/Sub to ?token=<GOOGLE_PLAY_RTDN_TOKEN>."""
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        token = settings.GOOGLE_PLAY_RTDN_TOKEN
+        if not token or not hmac.compare_digest(request.query_params.get("token", ""), token):
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        try:
+            GooglePlayBilling.handle_notification(request.data.get("message", {}))
+        except ProviderError:
+            return Response(status=status.HTTP_503_SERVICE_UNAVAILABLE)  # Pub/Sub retries later
+        return Response(status=status.HTTP_204_NO_CONTENT)

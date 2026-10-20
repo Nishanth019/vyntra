@@ -3,8 +3,11 @@ Django admin for the platform owner: browse and correct every table. The app's o
 plan changes, notifications) live in services.py, so changes made here skip them — use with care.
 """
 
-from django.contrib import admin
+from datetime import timedelta
+
+from django.contrib import admin, messages
 from django.db.models import Count, Q
+from django.utils import timezone
 
 from .models import (
     BusinessAccount,
@@ -23,7 +26,12 @@ from .models import (
     NotificationSetting,
     Payment,
     Staff,
+    Subscription,
+    SubscriptionPayment,
+    SubscriptionPlan,
 )
+from .billing import ProviderError, Razorpay
+from .subscriptions import SubscriptionService
 
 admin.site.site_header = "Vyntra Admin"
 admin.site.site_title = "Vyntra Admin"
@@ -237,3 +245,112 @@ class BusinessAdminDeviceAdmin(BaseAdmin):
     raw_id_fields = ("business_admin",)
     # Push tokens are credentials for sending notifications to that phone.
     exclude = ("push_token",)
+
+
+# --- Vyntra subscriptions ----------------------------------------------------------------------
+
+
+@admin.register(SubscriptionPlan)
+class SubscriptionPlanAdmin(BaseAdmin):
+    list_display = ("id", "name", "code", "months", "price", "razorpay_plan_id", "google_base_plan_id", "is_active")
+    list_editable = ("price", "is_active")
+    ordering = ("sort_order", "id")
+    actions = ("create_razorpay_plans",)
+
+    @admin.action(description="Create the selected plans in Razorpay (needs Razorpay keys)")
+    def create_razorpay_plans(self, request, queryset):
+        if not Razorpay.is_configured():
+            self.message_user(request, "Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET first.", messages.ERROR)
+            return
+        for plan in queryset:
+            if plan.razorpay_plan_id:
+                self.message_user(request, f"{plan.name} already has {plan.razorpay_plan_id}.", messages.INFO)
+                continue
+            try:
+                plan.razorpay_plan_id = Razorpay.create_plan(plan)
+            except ProviderError as error:
+                self.message_user(request, f"{plan.name}: Razorpay refused it ({error}).", messages.ERROR)
+                continue
+            plan.save()
+            self.message_user(request, f"{plan.name} → {plan.razorpay_plan_id}")
+
+
+class SubscriptionPaymentInline(admin.TabularInline):
+    model = SubscriptionPayment
+    extra = 0
+    fields = ("paid_at", "provider", "provider_payment_id", "plan", "amount", "status", "period_end")
+    readonly_fields = fields
+    can_delete = False
+
+
+class AccessFilter(admin.SimpleListFilter):
+    title = "access"
+    parameter_name = "access"
+
+    def lookups(self, request, model_admin):
+        return [("trial", "In free trial"), ("paid", "Paid plan running"), ("week", "Ending within 7 days"),
+                ("ended", "Ended (read-only)")]
+
+    def queryset(self, request, queryset):
+        now = timezone.now()
+        running = Q(trial_ends_at__gt=now) | Q(current_period_end__gt=now)
+        if self.value() == "trial":
+            return queryset.filter(trial_ends_at__gt=now).exclude(current_period_end__gt=now)
+        if self.value() == "paid":
+            return queryset.filter(current_period_end__gt=now)
+        if self.value() == "week":
+            soon = now + timedelta(days=7)
+            return queryset.filter(running).exclude(trial_ends_at__gt=soon).exclude(current_period_end__gt=soon)
+        if self.value() == "ended":
+            return queryset.exclude(running)
+        return queryset
+
+
+@admin.register(Subscription)
+class SubscriptionAdmin(BaseAdmin):
+    list_display = ("id", "business_admin", "state", "plan", "trial_ends_at", "current_period_end", "provider",
+                    "auto_renew")
+    list_filter = (AccessFilter, "status", "provider", "plan", "auto_renew")
+    search_fields = ("business_admin__name", "business_admin__email", "business_admin__phone",
+                     "provider_subscription_id")
+    list_select_related = ("business_admin", "plan")
+    raw_id_fields = ("business_admin",)
+    readonly_fields = ("state", "access_until", "created_at", "updated_at")
+    inlines = [SubscriptionPaymentInline]
+    actions = ("give_7_days", "give_15_days", "give_30_days")
+
+    @admin.display(description="State")
+    def state(self, subscription):
+        return SubscriptionService.state(subscription)
+
+    @admin.display(description="Access until")
+    def access_until(self, subscription):
+        return SubscriptionService.access_until(subscription)
+
+    def _give(self, request, queryset, days):
+        for subscription in queryset:
+            SubscriptionService.extend(subscription, days)
+        self.message_user(request, f"Gave {days} free days to {queryset.count()} login(s).")
+
+    @admin.action(description="Give 7 free days")
+    def give_7_days(self, request, queryset):
+        self._give(request, queryset, 7)
+
+    @admin.action(description="Give 15 free days")
+    def give_15_days(self, request, queryset):
+        self._give(request, queryset, 15)
+
+    @admin.action(description="Give 30 free days")
+    def give_30_days(self, request, queryset):
+        self._give(request, queryset, 30)
+
+
+@admin.register(SubscriptionPayment)
+class SubscriptionPaymentAdmin(BaseAdmin):
+    list_display = ("id", "subscription", "provider", "plan", "amount", "status", "paid_at", "period_end")
+    list_filter = ("provider", "status", "plan")
+    search_fields = ("provider_payment_id", "subscription__business_admin__name",
+                     "subscription__business_admin__email")
+    list_select_related = ("subscription__business_admin", "plan")
+    raw_id_fields = ("subscription",)
+    date_hierarchy = "paid_at"

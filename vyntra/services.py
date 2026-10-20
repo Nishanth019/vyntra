@@ -13,6 +13,7 @@ from django.db.models.functions import Coalesce
 from django.utils import timezone
 from rest_framework.authentication import BaseAuthentication, get_authorization_header
 from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.permissions import SAFE_METHODS
 
 from .models import (
     BusinessAccount,
@@ -26,6 +27,7 @@ from .models import (
     NotificationSetting,
     Payment,
 )
+from .subscriptions import SubscriptionService
 
 logger = logging.getLogger(__name__)
 
@@ -126,10 +128,16 @@ class BusinessAccountService:
         )
 
     @classmethod
-    def check_admin_access(cls, business_admin, business_account_id):
-        """Raise 403 unless the admin has an active mapping to this business account."""
-        if not cls.get_accounts_for_admin(business_admin).filter(id=business_account_id).exists():
+    def check_admin_access(cls, request, business_account_id, allow_read_only=False):
+        """
+        Raise 403 unless the logged-in admin has an active mapping to this business account, and 402 for
+        changes (anything but GET) once the business owner's subscription has ended. `allow_read_only`
+        lets harmless personal changes, like marking notifications read, through anyway.
+        """
+        if not cls.get_accounts_for_admin(request.user).filter(id=business_account_id).exists():
             raise PermissionDenied("You do not have access to this business account.")
+        if request.method not in SAFE_METHODS and not allow_read_only:
+            SubscriptionService.check_write_access(business_account_id, request.user)
 
     @classmethod
     def get_admins(cls, business_account_id):
@@ -756,6 +764,8 @@ class NotificationService:
     def run_daily(cls, run):
         """`morning`: auto-inactive, reminders and summary. `evening`: today's collection summary."""
         today = timezone.localdate()
+        if run == "morning":
+            cls._subscription_reminders(today)
         accounts = BusinessAccount.objects.filter(is_active=True).values_list("id", flat=True)
         for business_account_id in accounts:
             try:
@@ -766,6 +776,28 @@ class NotificationService:
             except Exception:
                 logger.exception("Daily %s notifications failed for business %s", run, business_account_id)
         return len(accounts)
+
+    @classmethod
+    def _subscription_reminders(cls, today):
+        """Tells business owners their trial or plan is about to end; saved under their first business."""
+        for owner, title, message in SubscriptionService.reminders(today):
+            try:
+                already = Notification.objects.filter(
+                    business_admin=owner, notification_type="SUBSCRIPTION", notification_date=today
+                ).exists()
+                business_account_id = SubscriptionService.owned_account_ids(owner).first()
+                if already or business_account_id is None:
+                    continue
+                Notification.objects.create(
+                    business_account_id=business_account_id, business_admin=owner, notification_type="SUBSCRIPTION",
+                    title=title, message=message, notification_date=today,
+                )
+                tokens = BusinessAdminDevice.objects.filter(business_admin=owner, is_active=True).values_list(
+                    "push_token", flat=True
+                )
+                cls.send_push(list(tokens), title, message, {"open": "subscription"})
+            except Exception:
+                logger.exception("Subscription reminder failed for admin %s", owner.id)
 
     @classmethod
     def _sent(cls, business_account_id, notification_type, today):

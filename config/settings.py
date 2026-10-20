@@ -185,3 +185,16 @@ CRON_SECRET = os.getenv("CRON_SECRET", "")
 
 # `python manage.py test` builds the unmanaged tables from sql/schema.sql.
 TEST_RUNNER = "config.test_runner.VyntraTestRunner"
+
+
+# Vyntra subscriptions. Payments stay switched off until these are set in the environment.
+# Razorpay (website): Dashboard → Account & Settings → API Keys, and Webhooks.
+RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "")
+RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "")
+RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET", "")
+# Google Play Billing (Android app): a service account JSON key with access in Play Console,
+# and a shared secret appended to the Pub/Sub push URL for real-time notifications.
+GOOGLE_PLAY_PACKAGE_NAME = os.getenv("GOOGLE_PLAY_PACKAGE_NAME", "com.vyntra.app")
+GOOGLE_PLAY_PRODUCT_ID = os.getenv("GOOGLE_PLAY_PRODUCT_ID", "vyntra_pro")
+GOOGLE_PLAY_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON", "")
+GOOGLE_PLAY_RTDN_TOKEN = os.getenv("GOOGLE_PLAY_RTDN_TOKEN", "")

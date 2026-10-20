@@ -509,3 +509,116 @@ class NotificationSetting(TimeStampedModel):
     class Meta:
         managed = False
         db_table = "notification_setting"
+
+
+class SubscriptionPlan(TimeStampedModel):
+    """What Vyntra sells: Monthly / Quarterly / Yearly access for one login and the businesses it owns."""
+
+    code = models.CharField(max_length=30, unique=True)
+    name = models.CharField(max_length=100)
+    months = models.PositiveIntegerField()
+    price = models.DecimalField(max_digits=10, decimal_places=2)
+    currency = models.CharField(max_length=3, default="INR")
+
+    razorpay_plan_id = models.CharField(max_length=100, null=True, blank=True)
+    google_base_plan_id = models.CharField(max_length=100, null=True, blank=True)
+
+    sort_order = models.IntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        managed = False
+        db_table = "subscription_plan"
+        ordering = ["sort_order", "id"]
+
+    def __str__(self):
+        return self.name
+
+
+class Subscription(TimeStampedModel):
+    """One login's free trial and paid plan. Every business that login owns follows it."""
+
+    TRIAL = "TRIAL"
+    ACTIVE = "ACTIVE"
+    CANCELLED = "CANCELLED"
+    EXPIRED = "EXPIRED"
+    STATUS_CHOICES = [(TRIAL, "Trial"), (ACTIVE, "Active"), (CANCELLED, "Cancelled"), (EXPIRED, "Expired")]
+
+    RAZORPAY = "RAZORPAY"
+    GOOGLE_PLAY = "GOOGLE_PLAY"
+    APPLE = "APPLE"
+    MANUAL = "MANUAL"
+    PROVIDER_CHOICES = [(RAZORPAY, "Razorpay"), (GOOGLE_PLAY, "Google Play"), (APPLE, "Apple"), (MANUAL, "Manual")]
+
+    business_admin = models.OneToOneField(
+        BusinessAdmin,
+        on_delete=models.PROTECT,
+        db_column="business_admin_id",
+        related_name="subscription",
+    )
+    plan = models.ForeignKey(
+        SubscriptionPlan,
+        on_delete=models.PROTECT,
+        db_column="subscription_plan_id",
+        related_name="subscriptions",
+        null=True,
+        blank=True,
+    )
+
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=TRIAL)
+    trial_ends_at = models.DateTimeField()
+    current_period_start = models.DateTimeField(null=True, blank=True)
+    current_period_end = models.DateTimeField(null=True, blank=True)
+    auto_renew = models.BooleanField(default=False)
+
+    provider = models.CharField(max_length=20, choices=PROVIDER_CHOICES, null=True, blank=True)
+    provider_subscription_id = models.CharField(max_length=255, null=True, blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = "subscription"
+
+    def __str__(self):
+        return f"{self.business_admin} · {self.get_status_display()}"
+
+
+class SubscriptionPayment(TimeStampedModel):
+    """Every charge (first payment and each renewal) from any provider."""
+
+    subscription = models.ForeignKey(
+        Subscription,
+        on_delete=models.PROTECT,
+        db_column="subscription_id",
+        related_name="payments",
+    )
+    plan = models.ForeignKey(
+        SubscriptionPlan,
+        on_delete=models.PROTECT,
+        db_column="subscription_plan_id",
+        related_name="payments",
+        null=True,
+        blank=True,
+    )
+
+    provider = models.CharField(max_length=20, choices=Subscription.PROVIDER_CHOICES)
+    provider_payment_id = models.CharField(max_length=255)
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    currency = models.CharField(max_length=3, default="INR")
+    status = models.CharField(max_length=20, default="PAID")
+
+    period_start = models.DateTimeField(null=True, blank=True)
+    period_end = models.DateTimeField(null=True, blank=True)
+    paid_at = models.DateTimeField()
+    raw_response = models.JSONField(null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = "subscription_payment"
+        ordering = ["-paid_at", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["provider", "provider_payment_id"],
+                name="uk_subscription_payment_provider_ref",
+            ),
+        ]

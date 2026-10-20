@@ -28,4 +28,12 @@ urlpatterns = [
     path("admins/", views.AdminView.as_view(), name="admins"),
     path("me/", views.MeView.as_view(), name="me"),
     path("me/password/", views.ChangePasswordView.as_view(), name="me-password"),
+    path("subscription/", views.SubscriptionView.as_view(), name="subscription"),
+    path("subscription/cancel/", views.SubscriptionCancelView.as_view(), name="subscription-cancel"),
+    path("subscription/razorpay/", views.RazorpayCheckoutView.as_view(), name="subscription-razorpay"),
+    path("subscription/razorpay/confirm/", views.RazorpayConfirmView.as_view(), name="subscription-razorpay-confirm"),
+    path("subscription/google-play/confirm/", views.GooglePlayConfirmView.as_view(),
+         name="subscription-google-play-confirm"),
+    path("webhooks/razorpay/", views.RazorpayWebhookView.as_view(), name="webhook-razorpay"),
+    path("webhooks/google-play/", views.GooglePlayWebhookView.as_view(), name="webhook-google-play"),
 ]

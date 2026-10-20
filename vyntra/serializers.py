@@ -23,7 +23,10 @@ from .models import (
     NotificationSetting,
     Payment,
     Staff,
+    SubscriptionPayment,
+    SubscriptionPlan,
 )
+from .subscriptions import SubscriptionService
 
 
 def normalize_mobile(value):
@@ -110,6 +113,8 @@ class BusinessAccountSerializer(serializers.ModelSerializer):
     contact_no = MobileField(required=False, allow_null=True, allow_blank=True)
     email = serializers.EmailField(max_length=255, required=False, allow_null=True, allow_blank=True)
     website = serializers.URLField(max_length=500, required=False, allow_null=True, allow_blank=True)
+    # Owner and read-only state for the logged-in admin (pass context={"admin": ...}).
+    access = serializers.SerializerMethodField()
 
     class Meta:
         model = BusinessAccount
@@ -117,9 +122,13 @@ class BusinessAccountSerializer(serializers.ModelSerializer):
             "id", "business_type", "business_type_id", "name", "logo_url",
             "address", "city", "state", "country", "address_lat", "address_lng",
             "contact_no", "email", "website", "terms_and_conditions",
-            "is_active", "created_at", "updated_at",
+            "is_active", "access", "created_at", "updated_at",
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
+
+    def get_access(self, account):
+        admin = self.context.get("admin")
+        return SubscriptionService.business_access(account.id, admin) if admin else None
 
 
 class BusinessAccountUpdateSerializer(BusinessAccountSerializer):
@@ -625,3 +634,51 @@ class NotificationSettingSerializer(serializers.ModelSerializer):
 class DeviceSerializer(serializers.Serializer):
     push_token = serializers.CharField(max_length=255)
     platform = serializers.CharField(max_length=20, required=False, allow_blank=True)
+
+
+class SubscriptionPlanSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SubscriptionPlan
+        fields = ["code", "name", "months", "price", "currency", "google_base_plan_id"]
+
+
+class SubscriptionPaymentSerializer(serializers.ModelSerializer):
+    plan_name = serializers.CharField(source="plan.name", default=None)
+
+    class Meta:
+        model = SubscriptionPayment
+        fields = ["id", "provider", "amount", "currency", "status", "plan_name", "period_start", "period_end",
+                  "paid_at"]
+
+
+class SubscriptionSummarySerializer(serializers.Serializer):
+    state = serializers.CharField()
+    has_access = serializers.BooleanField()
+    can_purchase = serializers.BooleanField()
+    trial_ends_at = serializers.DateTimeField()
+    current_period_end = serializers.DateTimeField(allow_null=True)
+    access_until = serializers.DateTimeField()
+    days_left = serializers.IntegerField()
+    auto_renew = serializers.BooleanField()
+    provider = serializers.CharField(allow_null=True)
+    plan = SubscriptionPlanSerializer(allow_null=True)
+    owns_business = serializers.BooleanField()
+
+
+class PlanChoiceSerializer(serializers.Serializer):
+    plan_code = serializers.SlugRelatedField(
+        slug_field="code",
+        queryset=SubscriptionPlan.objects.filter(is_active=True),
+        source="plan",
+        error_messages={"does_not_exist": "Choose one of the available plans."},
+    )
+
+
+class RazorpayConfirmSerializer(serializers.Serializer):
+    razorpay_payment_id = serializers.CharField(max_length=100)
+    razorpay_subscription_id = serializers.CharField(max_length=100)
+    razorpay_signature = serializers.CharField(max_length=200)
+
+
+class GooglePlayConfirmSerializer(serializers.Serializer):
+    purchase_token = serializers.CharField(max_length=1000)
