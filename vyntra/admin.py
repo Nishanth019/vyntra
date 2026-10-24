@@ -10,6 +10,8 @@ from django.db.models import Count, Q
 from django.utils import timezone
 
 from .models import (
+    WhatsAppMessage,
+    WhatsAppSetting,
     BusinessAccount,
     BusinessAccountAdmin,
     BusinessAdmin,
@@ -378,3 +380,22 @@ class SubscriptionPaymentAdmin(BaseAdmin):
     list_select_related = ("subscription__business_admin", "plan")
     raw_id_fields = ("subscription",)
     date_hierarchy = "paid_at"
+
+
+# --- WhatsApp to members ------------------------------------------------------------------------
+
+
+@admin.register(WhatsAppSetting)
+class WhatsAppSettingAdmin(BaseAdmin):
+    list_display = ("id", "business_account", "enabled", "expiry_reminders", "expired_followups", "dues_reminders",
+                    "payment_receipts", "birthday_wishes")
+    list_filter = ("enabled",)
+    raw_id_fields = ("business_account",)
+
+
+@admin.register(WhatsAppMessage)
+class WhatsAppMessageAdmin(BaseAdmin):
+    list_display = ("id", "sent_date", "business_account", "member", "message_type", "phone", "status")
+    list_filter = ("status", "message_type", "sent_date")
+    search_fields = ("phone", "member__first_name", "business_account__name")
+    raw_id_fields = ("business_account", "member")

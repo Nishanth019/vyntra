@@ -622,3 +622,48 @@ class SubscriptionPayment(TimeStampedModel):
                 name="uk_subscription_payment_provider_ref",
             ),
         ]
+
+
+class WhatsAppSetting(TimeStampedModel):
+    """Which WhatsApp messages a business sends to its members (off until the owner turns it on)."""
+
+    business_account = models.OneToOneField(
+        BusinessAccount,
+        on_delete=models.PROTECT,
+        db_column="business_account_id",
+        related_name="whatsapp_setting",
+    )
+    enabled = models.BooleanField(default=False)
+    expiry_reminders = models.BooleanField(default=True)
+    expired_followups = models.BooleanField(default=True)
+    dues_reminders = models.BooleanField(default=True)
+    payment_receipts = models.BooleanField(default=True)
+    birthday_wishes = models.BooleanField(default=True)
+
+    class Meta:
+        managed = False
+        db_table = "whatsapp_setting"
+
+
+class WhatsAppMessage(TimeStampedModel):
+    """Every WhatsApp message sent (or attempted) to a member."""
+
+    business_account = models.ForeignKey(
+        BusinessAccount, on_delete=models.PROTECT, db_column="business_account_id", related_name="whatsapp_messages"
+    )
+    member = models.ForeignKey(
+        Member, on_delete=models.PROTECT, db_column="member_id", related_name="whatsapp_messages",
+        null=True, blank=True,
+    )
+    message_type = models.CharField(max_length=30)
+    phone = models.CharField(max_length=20)
+    template = models.CharField(max_length=100)
+    status = models.CharField(max_length=20)
+    provider_message_id = models.CharField(max_length=255, null=True, blank=True)
+    error = models.CharField(max_length=1000, null=True, blank=True)
+    sent_date = models.DateField()
+
+    class Meta:
+        managed = False
+        db_table = "whatsapp_message"
+        ordering = ["-id"]
