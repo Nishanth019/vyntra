@@ -148,7 +148,17 @@ class SubscriptionService:
 
     @classmethod
     def check_can_create_business(cls, admin):
-        if not cls.has_access(cls.for_admin(admin)):
+        subscription = cls.for_admin(admin)
+        # An admin added to someone else's business gets their own full trial with their first business,
+        # however long ago their login was made. Only once: owning any business before (even a deleted one)
+        # or having paid counts.
+        never_owned = not BusinessAccountAdmin.objects.filter(business_admin=admin, role=OWNER).exists()
+        if never_owned and subscription.provider is None:
+            fresh_trial = timezone.now() + timedelta(days=TRIAL_DAYS)
+            if subscription.trial_ends_at < fresh_trial:
+                subscription.trial_ends_at = fresh_trial
+                subscription.save(update_fields=["trial_ends_at", "updated_at"])
+        if not cls.has_access(subscription):
             raise SubscriptionRequired("Your subscription has ended. Renew it to add a business.")
 
     # ---- Changes from payments ----------------------------------------------------------------

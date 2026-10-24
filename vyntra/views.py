@@ -1014,7 +1014,7 @@ class CollectionsView(APIView):
 
 
 class AdminView(APIView):
-    """Admins of a business account."""
+    """Admins of a business account. Only the business owner can see and manage them."""
 
     permission_classes = [IsAuthenticated]
 
@@ -1026,7 +1026,7 @@ class AdminView(APIView):
         query = BusinessAccountQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         business_account_id = query.validated_data["business_account_id"]
-        BusinessAccountService.check_admin_access(request, business_account_id)
+        BusinessAccountService.check_owner(request, business_account_id)
 
         account_admins = (
             BusinessAccountAdmin.objects.select_related("business_admin")
@@ -1039,7 +1039,7 @@ class AdminView(APIView):
         query = BusinessAccountQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         business_account_id = query.validated_data["business_account_id"]
-        BusinessAccountService.check_admin_access(request, business_account_id)
+        BusinessAccountService.check_owner(request, business_account_id)
 
         serializer = SignupSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -1097,7 +1097,7 @@ class AdminView(APIView):
         query = AdminDetailQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         params = query.validated_data
-        BusinessAccountService.check_admin_access(request, params["business_account_id"])
+        BusinessAccountService.check_owner(request, params["business_account_id"])
 
         return get_object_or_404(
             BusinessAccountAdmin.objects.select_related("business_admin"),

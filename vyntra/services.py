@@ -148,6 +148,13 @@ class BusinessAccountService:
             SubscriptionService.check_write_access(business_account_id, request.user)
 
     @classmethod
+    def check_owner(cls, request, business_account_id):
+        """Raise 403 unless the logged-in admin owns this business (only owners manage its admins)."""
+        cls.check_admin_access(request, business_account_id)
+        if SubscriptionService.owner_of(business_account_id) != request.user:
+            raise PermissionDenied("Only the owner of this business can manage its admins.")
+
+    @classmethod
     def get_admins(cls, business_account_id):
         """Active admins with active access to the business."""
         return BusinessAdmin.objects.filter(

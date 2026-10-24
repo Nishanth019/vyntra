@@ -143,7 +143,40 @@ class OwnershipTests(SubscriptionTestCase):
     def test_the_owner_cant_be_removed(self):
         desk = self.login_as(self.add_admin())
         response = desk.put(f"/api/v1/admins/{self.q}&admin_id={self.admin.id}", {"is_active": False}, format="json")
+        self.assertEqual(response.status_code, 403)
+        response = self.client.put(f"/api/v1/admins/{self.q}&admin_id={self.admin.id}", {"is_active": False},
+                                   format="json")
         self.assertEqual(response.status_code, 400)
+
+    def test_only_the_owner_can_see_and_manage_admins(self):
+        desk_admin = self.add_admin()
+        desk = self.login_as(desk_admin)
+        self.assertEqual(desk.get(f"/api/v1/admins/{self.q}").status_code, 403)
+        self.assertEqual(desk.get(f"/api/v1/admins/{self.q}&admin_id={desk_admin.id}").status_code, 403)
+        new_admin = {"full_name": "Sneaky", "mobile_no": "9000000002", "email": "s@example.test", "password": "pass-word-9"}
+        self.assertEqual(desk.post(f"/api/v1/admins/{self.q}", new_admin, format="json").status_code, 403)
+        self.assertEqual(desk.delete(f"/api/v1/admins/{self.q}&admin_id={desk_admin.id}").status_code, 403)
+        self.assertEqual(self.client.get(f"/api/v1/admins/{self.q}").status_code, 200)
+
+    def test_an_admin_gets_a_fresh_trial_for_their_own_first_business(self):
+        desk_admin = self.add_admin()
+        desk_subscription = SubscriptionService.for_admin(desk_admin)
+        desk_subscription.trial_ends_at = timezone.now() - timedelta(days=40)
+        desk_subscription.save()
+        desk = self.login_as(desk_admin)
+        business_type_id = self.account.business_type_id
+        response = desk.post("/api/v1/business-accounts/", {"name": "Desk Gym", "business_type_id": business_type_id},
+                             format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertGreater(SubscriptionService.for_admin(desk_admin).trial_ends_at, timezone.now() + timedelta(days=14))
+
+        # Only once: deleting it and starting again doesn't reset the trial.
+        desk_subscription = SubscriptionService.for_admin(desk_admin)
+        desk_subscription.trial_ends_at = timezone.now() - timedelta(days=1)
+        desk_subscription.save()
+        response = desk.post("/api/v1/business-accounts/", {"name": "Desk Gym 2", "business_type_id": business_type_id},
+                             format="json")
+        self.assertEqual(response.status_code, 402)
 
     def test_an_admin_can_be_removed_from_the_business(self):
         desk = self.add_admin()
@@ -156,7 +189,7 @@ class OwnershipTests(SubscriptionTestCase):
 
     def test_the_owner_and_yourself_cant_be_removed(self):
         desk = self.login_as(self.add_admin())
-        self.assertEqual(desk.delete(f"/api/v1/admins/{self.q}&admin_id={self.admin.id}").status_code, 400)
+        self.assertEqual(desk.delete(f"/api/v1/admins/{self.q}&admin_id={self.admin.id}").status_code, 403)
         self.assertEqual(self.client.delete(f"/api/v1/admins/{self.q}&admin_id={self.admin.id}").status_code, 400)
 
     def test_changing_your_password_needs_no_current_password_and_signs_out_other_devices(self):
@@ -185,7 +218,7 @@ class OwnershipTests(SubscriptionTestCase):
                                         {"new_password": "x-owner-pass-9"}, format="json").status_code, 401)
         desk_again = self.login_as(desk)
         self.assertEqual(desk_again.put(f"/api/v1/admins/password/{self.q}&admin_id={self.admin.id}",
-                                        {"new_password": "x-owner-pass-9"}, format="json").status_code, 400)
+                                        {"new_password": "x-owner-pass-9"}, format="json").status_code, 403)
         self.assertEqual(self.client.put(f"/api/v1/admins/password/{self.q}&admin_id={self.admin.id}",
                                          {"new_password": "x-owner-pass-9"}, format="json").status_code, 400)
 
