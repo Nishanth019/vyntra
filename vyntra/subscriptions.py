@@ -170,6 +170,26 @@ class SubscriptionService:
         return subscription
 
     @classmethod
+    def renewal_start(cls, subscription):
+        """When a plan bought now should start: after the paid days left (so none are lost), otherwise now."""
+        if cls.state(subscription) == "CANCELLED":
+            return subscription.current_period_end
+        return None
+
+    @classmethod
+    def schedule_renewal(cls, admin, provider, plan, provider_subscription_id):
+        """A new plan takes over when the paid period ends; it is first charged then."""
+        subscription = Subscription.objects.select_for_update().get(pk=cls.for_admin(admin).pk)
+        subscription.plan = plan
+        subscription.status = Subscription.ACTIVE
+        subscription.auto_renew = True
+        subscription.provider = provider
+        subscription.provider_subscription_id = provider_subscription_id
+        subscription.cancelled_at = None
+        subscription.save()
+        return subscription
+
+    @classmethod
     def stop_renewal(cls, subscription, expired=False):
         """The plan won't renew (cancelled, or the provider gave up charging). Paid days are kept."""
         subscription.auto_renew = False

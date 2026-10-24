@@ -78,6 +78,7 @@ from .serializers import (
     GooglePlayConfirmSerializer,
     PlanChoiceSerializer,
     RazorpayConfirmSerializer,
+    RazorpaySyncSerializer,
     SubscriptionPaymentSerializer,
     SubscriptionPlanSerializer,
     SubscriptionSummarySerializer,
@@ -1209,6 +1210,18 @@ class RazorpayConfirmView(APIView):
         RazorpayBilling.confirm_checkout(
             request.user, data["razorpay_payment_id"], data["razorpay_subscription_id"], data["razorpay_signature"]
         )
+        return subscription_response(request.user)
+
+
+class RazorpaySyncView(APIView):
+    """The app calls this after Razorpay's payment page closes; it reads the subscription straight from Razorpay."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = RazorpaySyncSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        RazorpayBilling.sync(request.user, serializer.validated_data["subscription_id"])
         return subscription_response(request.user)
 
 

@@ -100,14 +100,18 @@ class Razorpay:
         return created["id"]
 
     @classmethod
-    def create_subscription(cls, plan, admin):
+    def create_subscription(cls, plan, admin, start_at=None):
+        """`start_at` delays the first charge (e.g. until the current paid period ends)."""
         cycles = max(1, cls.YEARS_OF_RENEWALS * 12 // plan.months)
-        return cls._request("POST", "/subscriptions", {
+        body = {
             "plan_id": plan.razorpay_plan_id,
             "total_count": cycles,
             "customer_notify": 1,
             "notes": {"business_admin_id": str(admin.id), "plan_code": plan.code},
-        })
+        }
+        if start_at:
+            body["start_at"] = int(start_at.timestamp())
+        return cls._request("POST", "/subscriptions", body)
 
     @classmethod
     def fetch_subscription(cls, subscription_id):
@@ -149,13 +153,16 @@ class RazorpayBilling:
         subscription = SubscriptionService.for_admin(admin)
         if not SubscriptionService.can_purchase(subscription):
             raise ValidationError({"detail": "Your plan is already active and renews automatically."})
+        starts_at = SubscriptionService.renewal_start(subscription)
         try:
-            created = Razorpay.create_subscription(plan, admin)
+            created = Razorpay.create_subscription(plan, admin, starts_at)
         except ProviderError:
             raise ValidationError({"detail": "Couldn't start the payment. Please try again."})
         return {
             "key_id": settings.RAZORPAY_KEY_ID,
             "subscription_id": created["id"],
+            # Set when the new plan only takes over (and is first charged) once the paid period ends.
+            "starts_at": starts_at,
             # Razorpay's hosted payment page for this subscription; the Android app opens it in a browser.
             "payment_url": created.get("short_url", ""),
             "plan": plan,
@@ -180,6 +187,18 @@ class RazorpayBilling:
         return cls.apply(entity, payment)
 
     @classmethod
+    def sync(cls, admin, subscription_id):
+        """Called by the app when the buyer returns from Razorpay's payment page, so access unlocks right away."""
+        try:
+            entity = Razorpay.fetch_subscription(subscription_id)
+        except ProviderError:
+            raise ValidationError({"detail": "Couldn't check the payment yet. It will show up in a few minutes."})
+        if entity.get("notes", {}).get("business_admin_id") != str(admin.id):
+            raise ValidationError({"detail": "This payment belongs to another account."})
+        if entity.get("status") in ("authenticated", "active"):
+            cls.apply(entity)
+
+    @classmethod
     def handle_webhook(cls, event):
         payload = event.get("payload", {})
         entity = payload.get("subscription", {}).get("entity")
@@ -187,7 +206,8 @@ class RazorpayBilling:
             return
         payment = payload.get("payment", {}).get("entity")
         name = event.get("event", "")
-        if name in ("subscription.activated", "subscription.charged", "subscription.resumed"):
+        if name in ("subscription.authenticated", "subscription.activated", "subscription.charged",
+                    "subscription.resumed"):
             cls.apply(entity, payment)
         elif name in ("subscription.cancelled", "subscription.completed", "subscription.halted"):
             cls.stop(entity, expired=name == "subscription.halted")
@@ -211,7 +231,12 @@ class RazorpayBilling:
             logger.warning("Razorpay subscription %s has no matching login or plan", entity.get("id"))
             return None
 
-        start = _from_unix(entity.get("current_start")) or timezone.now()
+        # Mandate approved but the first charge is in the future: the paid period carries on, then this plan renews.
+        start_at = _from_unix(entity.get("start_at"))
+        if entity.get("status") == "authenticated" and start_at and start_at > timezone.now():
+            return SubscriptionService.schedule_renewal(admin, Subscription.RAZORPAY, plan, entity["id"])
+
+        start =_from_unix(entity.get("current_start")) or timezone.now()
         end = _from_unix(entity.get("current_end")) or add_months(start, plan.months)
         renewing = entity.get("status") in ("active", "authenticated", "pending")
         subscription = SubscriptionService.start_period(

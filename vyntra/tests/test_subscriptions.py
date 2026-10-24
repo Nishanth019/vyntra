@@ -268,6 +268,56 @@ class RazorpayTests(SubscriptionTestCase):
         self.assertEqual(self.subscription.provider, Subscription.RAZORPAY)
         self.assertEqual(self.subscription.plan, self.monthly_plan)
 
+    def cancel_paid_plan(self):
+        self.webhook("subscription.charged", self.razorpay_subscription(), self.payment())
+        with mock.patch.object(Razorpay, "cancel_subscription"):
+            self.client.post("/api/v1/subscription/cancel/")
+        return self.subscription.current_period_end
+
+    def test_buying_after_cancelling_starts_when_the_paid_days_run_out(self):
+        paid_until = self.cancel_paid_plan()
+        with mock.patch.object(Razorpay, "_request", return_value={"id": "sub_2"}) as request:
+            response = self.client.post("/api/v1/subscription/razorpay/", {"plan_code": "YEARLY"}, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(request.call_args.args[2]["start_at"], unix(paid_until))
+
+        scheduled = {
+            "id": "sub_2", "plan_id": "plan_y", "status": "authenticated", "start_at": unix(paid_until),
+            "current_start": None, "current_end": None,
+            "notes": {"business_admin_id": str(self.admin.id), "plan_code": "YEARLY"},
+        }
+        with mock.patch.object(Razorpay, "fetch_subscription", return_value=scheduled):
+            response = self.client.post("/api/v1/subscription/razorpay/sync/", {"subscription_id": "sub_2"},
+                                        format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["state"], "ACTIVE")
+        self.assertEqual(response.data["plan"]["code"], "YEARLY")
+        self.assertEqual(self.subscription.current_period_end, paid_until)
+        self.assertEqual(SubscriptionPayment.objects.count(), 1)
+
+        # The first charge on the new plan arrives when the old period ends.
+        first_charge = {**scheduled, "status": "active", "current_start": unix(paid_until),
+                        "current_end": unix(paid_until + timedelta(days=365))}
+        self.webhook("subscription.charged", first_charge, self.payment("pay_2"))
+        self.assertEqual(unix(self.subscription.current_period_end), first_charge["current_end"])
+        self.assertEqual(SubscriptionPayment.objects.count(), 2)
+
+    def test_the_old_cancelled_subscription_cant_undo_the_scheduled_one(self):
+        self.cancel_paid_plan()
+        scheduled = {"id": "sub_2", "plan_id": "plan_m", "status": "authenticated",
+                     "start_at": unix(timezone.now() + timedelta(days=30)),
+                     "notes": {"business_admin_id": str(self.admin.id), "plan_code": "MONTHLY"}}
+        self.webhook("subscription.authenticated", scheduled)
+        self.webhook("subscription.cancelled", self.razorpay_subscription(status="cancelled"))
+        self.assertTrue(self.subscription.auto_renew)
+
+    def test_syncing_someone_elses_subscription_is_refused(self):
+        other = {"id": "sub_x", "status": "active", "notes": {"business_admin_id": "999"}}
+        with mock.patch.object(Razorpay, "fetch_subscription", return_value=other):
+            response = self.client.post("/api/v1/subscription/razorpay/sync/", {"subscription_id": "sub_x"},
+                                        format="json")
+        self.assertEqual(response.status_code, 400)
+
     def test_cancel_keeps_the_paid_days(self):
         self.webhook("subscription.charged", self.razorpay_subscription(), self.payment())
         with mock.patch.object(Razorpay, "cancel_subscription") as cancel:

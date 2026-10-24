@@ -32,6 +32,7 @@ urlpatterns = [
     path("subscription/cancel/", views.SubscriptionCancelView.as_view(), name="subscription-cancel"),
     path("subscription/razorpay/", views.RazorpayCheckoutView.as_view(), name="subscription-razorpay"),
     path("subscription/razorpay/confirm/", views.RazorpayConfirmView.as_view(), name="subscription-razorpay-confirm"),
+    path("subscription/razorpay/sync/", views.RazorpaySyncView.as_view(), name="subscription-razorpay-sync"),
     path("subscription/google-play/confirm/", views.GooglePlayConfirmView.as_view(),
          name="subscription-google-play-confirm"),
     path("webhooks/razorpay/", views.RazorpayWebhookView.as_view(), name="webhook-razorpay"),

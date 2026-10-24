@@ -674,6 +674,10 @@ class PlanChoiceSerializer(serializers.Serializer):
     )
 
 
+class RazorpaySyncSerializer(serializers.Serializer):
+    subscription_id = serializers.CharField(max_length=100)
+
+
 class RazorpayConfirmSerializer(serializers.Serializer):
     razorpay_payment_id = serializers.CharField(max_length=100)
     razorpay_subscription_id = serializers.CharField(max_length=100)
