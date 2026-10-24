@@ -156,6 +156,8 @@ class RazorpayBilling:
         return {
             "key_id": settings.RAZORPAY_KEY_ID,
             "subscription_id": created["id"],
+            # Razorpay's hosted payment page for this subscription; the Android app opens it in a browser.
+            "payment_url": created.get("short_url", ""),
             "plan": plan,
             "name": admin.name,
             "email": admin.email,
