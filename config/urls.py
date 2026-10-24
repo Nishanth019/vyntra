@@ -23,4 +23,8 @@ urlpatterns = [
     path('api/v1/', include('vyntra.urls')),
     path('privacy/', TemplateView.as_view(template_name='vyntra/privacy.html')),
     path('account-deletion/', TemplateView.as_view(template_name='vyntra/account_deletion.html')),
+    path('terms/', TemplateView.as_view(template_name='vyntra/terms.html')),
+    path('refunds/', TemplateView.as_view(template_name='vyntra/refunds.html')),
+    path('shipping/', TemplateView.as_view(template_name='vyntra/shipping.html')),
+    path('contact/', TemplateView.as_view(template_name='vyntra/contact.html')),
 ]

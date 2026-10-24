@@ -14,7 +14,16 @@
     .muted { color: var(--muted); }
     a { color: var(--accent); }
     li { margin: 4px 0; }
+    footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--muted); display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 14px; }
   </style>
 </head>
-<body><main>{% block content %}{% endblock %}</main></body>
+<body><main>{% block content %}{% endblock %}
+  <footer>
+    <a href="/terms/">Terms &amp; Conditions</a>
+    <a href="/privacy/">Privacy Policy</a>
+    <a href="/refunds/">Cancellation &amp; Refunds</a>
+    <a href="/shipping/">Shipping &amp; Delivery</a>
+    <a href="/contact/">Contact Us</a>
+  </footer>
+</main></body>
 </html>
