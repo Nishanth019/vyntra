@@ -318,6 +318,20 @@ class RazorpayTests(SubscriptionTestCase):
                                         format="json")
         self.assertEqual(response.status_code, 400)
 
+    def test_each_payment_has_a_receipt(self):
+        self.webhook("subscription.charged", self.razorpay_subscription(), {**self.payment(), "method": "upi"})
+        payment = self.client.get("/api/v1/subscription/").data["payments"][0]
+        self.assertEqual(payment["method"], "UPI")
+        self.assertTrue(payment["receipt_number"].startswith("VYN-"))
+
+        page = APIClient().get(f"/receipts/{payment['receipt_token']}/")
+        self.assertEqual(page.status_code, 200)
+        self.assertContains(page, payment["receipt_number"])
+        self.assertContains(page, "₹499.00")
+        self.assertContains(page, "UPI")
+        self.assertContains(page, self.admin.name)
+        self.assertEqual(APIClient().get("/receipts/forged/").status_code, 404)
+
     def test_cancel_keeps_the_paid_days(self):
         self.webhook("subscription.charged", self.razorpay_subscription(), self.payment())
         with mock.patch.object(Razorpay, "cancel_subscription") as cancel:

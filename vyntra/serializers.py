@@ -6,6 +6,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.utils import timezone
 from rest_framework import serializers
 
+from . import receipts
 from .services import MemberService
 from .models import (
     BusinessAccount,
@@ -644,11 +645,24 @@ class SubscriptionPlanSerializer(serializers.ModelSerializer):
 
 class SubscriptionPaymentSerializer(serializers.ModelSerializer):
     plan_name = serializers.CharField(source="plan.name", default=None)
+    method = serializers.SerializerMethodField()
+    receipt_number = serializers.SerializerMethodField()
+    # Opens the printable receipt at /receipts/<token>/ without the login token.
+    receipt_token = serializers.SerializerMethodField()
 
     class Meta:
         model = SubscriptionPayment
         fields = ["id", "provider", "amount", "currency", "status", "plan_name", "period_start", "period_end",
-                  "paid_at"]
+                  "paid_at", "method", "receipt_number", "receipt_token"]
+
+    def get_method(self, payment):
+        return receipts.payment_method(payment)
+
+    def get_receipt_number(self, payment):
+        return receipts.receipt_number(payment)
+
+    def get_receipt_token(self, payment):
+        return receipts.receipt_token(payment)
 
 
 class SubscriptionSummarySerializer(serializers.Serializer):

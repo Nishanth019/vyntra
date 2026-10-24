@@ -18,6 +18,8 @@ from django.contrib import admin
 from django.urls import include, path
 from django.views.generic import TemplateView
 
+from vyntra.receipts import receipt_view
+
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/v1/', include('vyntra.urls')),
@@ -27,4 +29,5 @@ urlpatterns = [
     path('refunds/', TemplateView.as_view(template_name='vyntra/refunds.html')),
     path('shipping/', TemplateView.as_view(template_name='vyntra/shipping.html')),
     path('contact/', TemplateView.as_view(template_name='vyntra/contact.html')),
+    path('receipts/<str:token>/', receipt_view, name='receipt'),
 ]
