@@ -198,3 +198,8 @@ GOOGLE_PLAY_PACKAGE_NAME = os.getenv("GOOGLE_PLAY_PACKAGE_NAME", "com.vyntra.app
 GOOGLE_PLAY_PRODUCT_ID = os.getenv("GOOGLE_PLAY_PRODUCT_ID", "vyntra_pro")
 GOOGLE_PLAY_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON", "")
 GOOGLE_PLAY_RTDN_TOKEN = os.getenv("GOOGLE_PLAY_RTDN_TOKEN", "")
+
+# Public site: where "Start free trial" / "Log in" go, and the WhatsApp number for the chat button (digits with
+# country code).
+WEB_APP_URL = os.getenv("WEB_APP_URL", "https://vyntra-web-664iy.ondigitalocean.app")
+SUPPORT_WHATSAPP = os.getenv("SUPPORT_WHATSAPP", "919121418845")

@@ -18,9 +18,11 @@ from django.contrib import admin
 from django.urls import include, path
 from django.views.generic import TemplateView
 
+from vyntra.pages import landing
 from vyntra.receipts import receipt_view
 
 urlpatterns = [
+    path('', landing, name='landing'),
     path('admin/', admin.site.urls),
     path('api/v1/', include('vyntra.urls')),
     path('privacy/', TemplateView.as_view(template_name='vyntra/privacy.html')),
