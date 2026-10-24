@@ -1148,6 +1148,32 @@ class ChangePasswordView(APIView):
         request.user.password = make_password(serializer.validated_data["new_password"])
         request.user.save()
 
+        # Other phones and browsers are signed out; this one gets a fresh token so it stays signed in.
+        access_token = BusinessAdminAuthService.generate_access_token(request.user)
+        response = Response({"admin": BusinessAdminSerializer(request.user).data, "access_token": access_token})
+        set_access_token_cookie(response, access_token)
+        return response
+
+
+class AdminPasswordView(APIView):
+    """Sets a new password for another admin of the business (e.g. they forgot theirs); signs them out everywhere."""
+
+    permission_classes = [IsAuthenticated]
+
+    def put(self, request):
+        account_admin = AdminView().get_account_admin(request)
+        if account_admin.business_admin_id == request.user.id:
+            return Response({"detail": "Change your own password from My Profile."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if account_admin.role == OWNER:
+            return Response({"detail": "The owner's password can only be changed by the owner, from My Profile."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        serializer = ChangePasswordSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        admin = account_admin.business_admin
+        admin.password = make_password(serializer.validated_data["new_password"])
+        admin.save()
         return Response({"result": "Password updated."})
 
 

@@ -1,4 +1,6 @@
 import calendar
+import hashlib
+import hmac
 import json
 import logging
 import time
@@ -87,11 +89,17 @@ def _member_due_expr():
 class BusinessAdminAuthService:
     ACCESS_TOKEN_MAX_AGE = 180 * 24 * 60 * 60  # seconds
 
+    @staticmethod
+    def password_stamp(business_admin):
+        """Changes whenever the password changes, so tokens issued before a password change stop working."""
+        return hmac.new(settings.SECRET_KEY.encode(), business_admin.password.encode(), hashlib.sha256).hexdigest()[:16]
+
     @classmethod
     def generate_access_token(cls, business_admin):
         current_time = time.time()
         token_exp = int(current_time) + int(cls.ACCESS_TOKEN_MAX_AGE)
-        payload = {"admin_id": business_admin.id, "time": current_time, "exp": token_exp}
+        payload = {"admin_id": business_admin.id, "time": current_time, "exp": token_exp,
+                   "pw": cls.password_stamp(business_admin)}
 
         token = jwt.encode(
             payload=payload,
@@ -977,6 +985,9 @@ class BusinessAdminJWTAuthentication(BaseAuthentication):
 
         admin = BusinessAdmin.objects.filter(id=payload.get("admin_id"), is_active=True).first()
         if admin is None:
+            return None
+        # Tokens from before this check have no stamp and stay valid until they expire.
+        if "pw" in payload and payload["pw"] != BusinessAdminAuthService.password_stamp(admin):
             return None
 
         return admin, payload

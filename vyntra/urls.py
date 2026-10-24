@@ -26,6 +26,7 @@ urlpatterns = [
     path("devices/test/", views.DeviceTestView.as_view(), name="devices-test"),
     path("cron/daily/", views.DailyJobView.as_view(), name="cron-daily"),
     path("admins/", views.AdminView.as_view(), name="admins"),
+    path("admins/password/", views.AdminPasswordView.as_view(), name="admin-password"),
     path("me/", views.MeView.as_view(), name="me"),
     path("me/password/", views.ChangePasswordView.as_view(), name="me-password"),
     path("subscription/", views.SubscriptionView.as_view(), name="subscription"),

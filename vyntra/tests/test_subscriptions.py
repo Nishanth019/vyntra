@@ -7,7 +7,7 @@ from unittest import mock
 
 from django.contrib import messages
 from django.contrib.admin import site as admin_site
-from django.contrib.auth.hashers import make_password
+from django.contrib.auth.hashers import check_password, make_password
 from django.test import RequestFactory, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -158,6 +158,36 @@ class OwnershipTests(SubscriptionTestCase):
         desk = self.login_as(self.add_admin())
         self.assertEqual(desk.delete(f"/api/v1/admins/{self.q}&admin_id={self.admin.id}").status_code, 400)
         self.assertEqual(self.client.delete(f"/api/v1/admins/{self.q}&admin_id={self.admin.id}").status_code, 400)
+
+    def test_changing_your_password_needs_no_current_password_and_signs_out_other_devices(self):
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f"Bearer {BusinessAdminAuthService.generate_access_token(self.admin)}")
+        other_phone = self.login_as(self.admin)
+        response = self.client.put("/api/v1/me/password/", {"new_password": "brand-new-pass-9"}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(other_phone.get("/api/v1/me/").status_code, 401)
+        this_phone = APIClient()
+        this_phone.credentials(HTTP_AUTHORIZATION=f"Bearer {response.data['access_token']}")
+        self.assertEqual(this_phone.get("/api/v1/me/").status_code, 200)
+
+    def test_setting_another_admins_password(self):
+        desk = self.add_admin()
+        desk_phone = self.login_as(desk)
+        response = self.client.put(f"/api/v1/admins/password/{self.q}&admin_id={desk.id}",
+                                   {"new_password": "front-desk-pass-9"}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        desk.refresh_from_db()
+        self.assertTrue(check_password("front-desk-pass-9", desk.password))
+        self.assertEqual(desk_phone.get("/api/v1/me/").status_code, 401)
+
+        # Nobody can set the owner's password, and your own goes through My Profile.
+        self.assertEqual(desk_phone.put(f"/api/v1/admins/password/{self.q}&admin_id={self.admin.id}",
+                                        {"new_password": "x-owner-pass-9"}, format="json").status_code, 401)
+        desk_again = self.login_as(desk)
+        self.assertEqual(desk_again.put(f"/api/v1/admins/password/{self.q}&admin_id={self.admin.id}",
+                                        {"new_password": "x-owner-pass-9"}, format="json").status_code, 400)
+        self.assertEqual(self.client.put(f"/api/v1/admins/password/{self.q}&admin_id={self.admin.id}",
+                                         {"new_password": "x-owner-pass-9"}, format="json").status_code, 400)
 
     def test_deleting_the_owners_login_hands_the_business_to_the_next_admin(self):
         desk = self.add_admin()

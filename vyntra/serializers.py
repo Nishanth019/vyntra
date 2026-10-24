@@ -1,7 +1,6 @@
 import re
 from decimal import Decimal
 
-from django.contrib.auth.hashers import check_password
 from django.contrib.auth.password_validation import validate_password
 from django.utils import timezone
 from rest_framework import serializers
@@ -522,13 +521,9 @@ class BusinessAdminUpdateSerializer(serializers.ModelSerializer):
 
 
 class ChangePasswordSerializer(serializers.Serializer):
-    current_password = serializers.CharField(write_only=True, max_length=128)
-    new_password = serializers.CharField(write_only=True, max_length=128)
+    """A new password for yourself (you're already signed in) or, from Manage Admins, for another admin."""
 
-    def validate_current_password(self, value):
-        if not check_password(value, self.context["request_admin"].password):
-            raise serializers.ValidationError("Current password is incorrect.")
-        return value
+    new_password = serializers.CharField(write_only=True, max_length=128)
 
     def validate_new_password(self, value):
         validate_password(value)
