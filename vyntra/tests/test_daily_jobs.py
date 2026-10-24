@@ -31,6 +31,10 @@ class DailyJobTests(ApiTestCase):
         summary = Notification.objects.get(business_account=self.account, notification_type="EVENING_SUMMARY")
         self.assertIn("₹500", summary.message)
 
+    def test_no_evening_summary_on_a_quiet_day(self):
+        self.run_job("evening")
+        self.assertFalse(Notification.objects.filter(notification_type="EVENING_SUMMARY").exists())
+
 
 class DashboardTests(ApiTestCase):
     def test_counts_and_dues(self):

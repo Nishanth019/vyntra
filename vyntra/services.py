@@ -980,6 +980,8 @@ class NotificationService:
         methods = payments.values("payment_method").annotate(total=Sum("amount")).order_by("-total")
         joined = Member.objects.filter(business_account_id=business_account_id, created_at__date=today).count()
         present = MemberAttendance.objects.filter(business_account_id=business_account_id, attendance_date=today).count()
+        if not total and not joined and not present:
+            return  # a quiet day: no summary rather than "₹0 · 0 · 0"
 
         message = f"Collected {rupees(total)}"
         if methods:
