@@ -35,7 +35,7 @@ from .models import (
     Staff,
     Subscription,
 )
-from . import member_import, whatsapp
+from . import member_import
 from .billing import GooglePlay, GooglePlayBilling, ProviderError, Razorpay, RazorpayBilling
 from .serializers import (
     AdminDetailQuerySerializer,
@@ -82,7 +82,6 @@ from .serializers import (
     PlanChoiceSerializer,
     RazorpayConfirmSerializer,
     RazorpaySyncSerializer,
-    WhatsAppSettingSerializer,
     SubscriptionPaymentSerializer,
     SubscriptionPlanSerializer,
     SubscriptionSummarySerializer,
@@ -936,43 +935,6 @@ class NotificationSettingView(APIView):
         business_account_id = query.validated_data["business_account_id"]
         BusinessAccountService.check_admin_access(request, business_account_id, allow_read_only=True)
         return NotificationService.get_setting(business_account_id)
-
-
-class WhatsAppSettingView(APIView):
-    """WhatsApp reminders to this business's members: anyone can see the settings, only the owner changes them."""
-
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        business_account_id = self.business_account_id(request)
-        BusinessAccountService.check_admin_access(request, business_account_id, allow_read_only=True)
-        return self.response(business_account_id)
-
-    def put(self, request):
-        business_account_id = self.business_account_id(request)
-        BusinessAccountService.check_admin_access(request, business_account_id)
-        if SubscriptionService.owner_of(business_account_id) != request.user:
-            return Response({"detail": "Only the owner of this business can change WhatsApp messages."},
-                            status=status.HTTP_403_FORBIDDEN)
-        serializer = WhatsAppSettingSerializer(whatsapp.get_setting(business_account_id), data=request.data,
-                                               partial=True)
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return self.response(business_account_id)
-
-    def business_account_id(self, request):
-        query = BusinessAccountQuerySerializer(data=request.query_params)
-        query.is_valid(raise_exception=True)
-        return query.validated_data["business_account_id"]
-
-    def response(self, business_account_id):
-        return Response({
-            **WhatsAppSettingSerializer(whatsapp.get_setting(business_account_id)).data,
-            # False until Vyntra's WhatsApp account is connected on the server.
-            "available": whatsapp.is_configured(),
-            "sent_this_month": whatsapp.sent_this_month(business_account_id),
-            "monthly_limit": settings.WHATSAPP_MONTHLY_LIMIT,
-        })
 
 
 class DeviceView(APIView):

@@ -10,7 +10,6 @@ from decimal import Decimal
 
 import jwt
 from django.conf import settings
-from django.db import transaction
 from django.db.models import Count, DecimalField, Exists, F, OuterRef, Prefetch, Subquery, Sum, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
@@ -30,7 +29,6 @@ from .models import (
     NotificationSetting,
     Payment,
 )
-from . import whatsapp
 from .subscriptions import SubscriptionService
 
 logger = logging.getLogger(__name__)
@@ -467,11 +465,8 @@ class PaymentService:
     METHOD_LABELS = {"CASH": "Cash", "UPI": "UPI", "CARD": "Card", "BANK_TRANSFER": "Bank"}
 
     @classmethod
-    def create(cls, member, membership, data, admin, notify_member=True):
-        """
-        Records a payment; it can't be more than what's still due on the plan. `notify_member` sends the member a
-        WhatsApp receipt (if the business has that on); imports of old payments turn it off.
-        """
+    def create(cls, member, membership, data, admin):
+        """Records a payment; it can't be more than what's still due on the plan."""
         if membership is not None:
             due = cls.balance(membership)
             if data["amount"] > due:
@@ -498,8 +493,6 @@ class PaymentService:
             membership=membership,
             payment=payment,
         )
-        if notify_member:
-            transaction.on_commit(lambda: whatsapp.payment_received(payment))
         return payment
 
     @classmethod
@@ -925,13 +918,6 @@ class NotificationService:
         if setting.birthday_alerts and birthdays:
             cls.notify(business_account_id, "BIRTHDAY", "🎂 Birthdays today", cls._names(birthdays),
                        push=push_details, member=birthdays[0] if len(birthdays) == 1 else None)
-
-        # WhatsApp reminders to the members themselves (if the business turned them on). A WhatsApp problem
-        # must never stop the admins' own morning summary below.
-        try:
-            whatsapp.run_morning(business_account_id, members, today)
-        except Exception:
-            logger.exception("WhatsApp morning reminders failed for business %s", business_account_id)
 
         # 6. The one push admins get each morning.
         parts = []

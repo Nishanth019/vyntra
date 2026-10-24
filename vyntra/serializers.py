@@ -8,7 +8,6 @@ from rest_framework import serializers
 from . import receipts
 from .services import MemberService
 from .models import (
-    WhatsAppSetting,
     BusinessAccount,
     BusinessAccountAdmin,
     BusinessAdmin,
@@ -626,13 +625,6 @@ class NotificationSettingSerializer(serializers.ModelSerializer):
             "morning_summary", "expiry_reminders", "expired_followups", "dues_reminders",
             "no_show_alerts", "birthday_alerts", "activity_alerts", "evening_summary",
         ]
-
-
-class WhatsAppSettingSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = WhatsAppSetting
-        fields = ["enabled", "expiry_reminders", "expired_followups", "dues_reminders", "payment_receipts",
-                  "birthday_wishes"]
 
 
 class DeviceSerializer(serializers.Serializer):

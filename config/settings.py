@@ -203,11 +203,3 @@ GOOGLE_PLAY_RTDN_TOKEN = os.getenv("GOOGLE_PLAY_RTDN_TOKEN", "")
 # country code).
 WEB_APP_URL = os.getenv("WEB_APP_URL", "https://vyntra-web-664iy.ondigitalocean.app")
 SUPPORT_WHATSAPP = os.getenv("SUPPORT_WHATSAPP", "919121418845")
-
-# WhatsApp reminders to gym members (Meta WhatsApp Cloud API). Nothing is sent until the token and phone number
-# id are set. Templates must be approved in Meta's WhatsApp Manager with the names in vyntra/whatsapp.py.
-WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "")
-WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
-WHATSAPP_TEMPLATE_LANGUAGE = os.getenv("WHATSAPP_TEMPLATE_LANGUAGE", "en")
-# Most messages one business can send in a calendar month (keeps Meta's per-message charges in check).
-WHATSAPP_MONTHLY_LIMIT = int(os.getenv("WHATSAPP_MONTHLY_LIMIT", "500"))

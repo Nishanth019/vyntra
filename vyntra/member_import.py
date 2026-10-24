@@ -293,7 +293,7 @@ def import_rows(business_account_id, admin, results):
         if payment:
             # Dated on the plan's start day, so old payments don't show up in today's collections.
             payment["payment_date"] = timezone.make_aware(datetime.combine(start_date, time(10, 0)))
-            PaymentService.create(member, membership, payment, admin, notify_member=False)
+            PaymentService.create(member, membership, payment, admin)
         created += 1
     if created:
         transaction.on_commit(lambda: NotificationService.notify_activity(

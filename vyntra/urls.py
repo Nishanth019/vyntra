@@ -24,7 +24,6 @@ urlpatterns = [
     path("member-attendance/", views.MemberAttendanceView.as_view(), name="member-attendance"),
     path("notifications/", views.NotificationView.as_view(), name="notifications"),
     path("notification-settings/", views.NotificationSettingView.as_view(), name="notification-settings"),
-    path("whatsapp-settings/", views.WhatsAppSettingView.as_view(), name="whatsapp-settings"),
     path("devices/", views.DeviceView.as_view(), name="devices"),
     path("devices/test/", views.DeviceTestView.as_view(), name="devices-test"),
     path("cron/daily/", views.DailyJobView.as_view(), name="cron-daily"),
