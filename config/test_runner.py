@@ -25,6 +25,7 @@ class VyntraTestRunner(DiscoverRunner):
             )
             cursor.execute(
                 "INSERT INTO business_type (name, code, description, is_active) "
-                "VALUES ('Gym', 'GYM', 'Gym and fitness center', 1)"
+                "VALUES ('Gym', 'GYM', 'Gym and fitness center', 1), "
+                "('PG / Hostel', 'PG', 'Paying guest, hostel and co-living', 1)"
             )
         return config

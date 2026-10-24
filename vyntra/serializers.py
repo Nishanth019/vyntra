@@ -21,8 +21,10 @@ from .models import (
     MembershipPlan,
     Notification,
     NotificationSetting,
+    Expense,
     Payment,
     Staff,
+    StaffSalary,
     SubscriptionPayment,
     SubscriptionPlan,
 )
@@ -179,7 +181,7 @@ class PaymentDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = Payment
         fields = [
-            "id", "member_id", "membership_id", "amount", "payment_date", "payment_method",
+            "id", "member_id", "membership_id", "pg_bill_id", "amount", "payment_date", "payment_method",
             "transaction_reference", "notes", "is_active", "created_at",
         ]
 
@@ -345,12 +347,13 @@ class StaffDetailQuerySerializer(BusinessAccountQuerySerializer):
 class StaffSerializer(serializers.ModelSerializer):
     phone = MobileField(required=False, allow_null=True, allow_blank=True)
     email = serializers.EmailField(max_length=255, required=False, allow_null=True, allow_blank=True)
+    salary = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=0, required=False, allow_null=True)
 
     class Meta:
         model = Staff
         fields = [
             "id", "employee_code", "first_name", "last_name", "phone", "email",
-            "role", "is_active", "created_at", "updated_at",
+            "role", "salary", "joining_date", "is_active", "created_at", "updated_at",
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
 
@@ -361,6 +364,80 @@ class StaffSerializer(serializers.ModelSerializer):
         if staff.exists():
             raise serializers.ValidationError("A staff member with this code already exists in this business.")
         return value
+
+
+EXPENSE_CATEGORIES = [
+    "RENT", "ELECTRICITY", "WATER", "INTERNET", "SALARY", "MAINTENANCE", "REPAIRS", "EQUIPMENT", "GROCERIES",
+    "CLEANING", "SUPPLIES", "MARKETING", "TAXES", "OTHER",
+]
+
+
+class ExpenseSerializer(serializers.ModelSerializer):
+    category = serializers.ChoiceField(choices=EXPENSE_CATEGORIES)
+    amount = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal("0.01"))
+    expense_date = serializers.DateField(default=timezone.localdate)
+    payment_method = serializers.ChoiceField(choices=["CASH", "UPI", "CARD", "BANK_TRANSFER"], required=False,
+                                             allow_null=True)
+    # Expenses made by paying a staff salary are changed from Staff → Salaries.
+    is_salary = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Expense
+        fields = ["id", "category", "amount", "expense_date", "description", "vendor", "payment_method", "notes",
+                  "is_salary", "created_at"]
+        read_only_fields = ["id", "created_at"]
+
+    def get_is_salary(self, expense):
+        return expense.staff_salaries.exists()
+
+
+class ExpenseListQuerySerializer(BusinessAccountQuerySerializer):
+    date_from = serializers.DateField(required=False)
+    date_to = serializers.DateField(required=False)
+    category = serializers.ChoiceField(choices=EXPENSE_CATEGORIES, required=False)
+
+
+class ExpenseDetailQuerySerializer(BusinessAccountQuerySerializer):
+    expense_id = serializers.IntegerField()
+
+
+class SalaryMonthQuerySerializer(BusinessAccountQuerySerializer):
+    month = serializers.DateField(input_formats=["%Y-%m", "%Y-%m-%d"])
+
+    def validate_month(self, value):
+        return value.replace(day=1)
+
+
+class SalaryDetailQuerySerializer(BusinessAccountQuerySerializer):
+    salary_id = serializers.IntegerField()
+
+
+class StaffSalaryCreateSerializer(serializers.Serializer):
+    staff_id = serializers.IntegerField()
+    salary_month = serializers.DateField(input_formats=["%Y-%m", "%Y-%m-%d"])
+    amount = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal("0.01"))
+    paid_on = serializers.DateField(default=timezone.localdate)
+    payment_method = serializers.ChoiceField(choices=["CASH", "UPI", "CARD", "BANK_TRANSFER"], default="CASH")
+
+    def validate_staff_id(self, value):
+        staff = Staff.objects.filter(id=value, business_account_id=self.context["business_account_id"]).first()
+        if staff is None:
+            raise serializers.ValidationError("Staff member not found.")
+        return staff
+
+    def validate_salary_month(self, value):
+        return value.replace(day=1)
+
+    def validate(self, attrs):
+        if StaffSalary.objects.filter(staff=attrs["staff_id"], salary_month=attrs["salary_month"]).exists():
+            raise serializers.ValidationError({"salary_month": "This month's salary is already paid."})
+        return attrs
+
+
+class StaffSalarySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = StaffSalary
+        fields = ["id", "salary_month", "amount", "paid_on", "payment_method", "expense_id"]
 
 
 class DurationTypeSerializer(serializers.ModelSerializer):

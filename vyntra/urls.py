@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import views
+from . import pg_views, views
 
 urlpatterns = [
     path("auth/signup/", views.SignupView.as_view(), name="auth-signup"),
@@ -17,6 +17,8 @@ urlpatterns = [
     path("members/import/template/", views.member_import_template, name="members-import-template"),
     path("member-activity/", views.MemberActivityView.as_view(), name="member-activity"),
     path("staff/", views.StaffView.as_view(), name="staff"),
+    path("staff-salaries/", views.StaffSalaryView.as_view(), name="staff-salaries"),
+    path("expenses/", views.ExpenseView.as_view(), name="expenses"),
     path("membership-plans/", views.MembershipPlanView.as_view(), name="membership-plans"),
     path("memberships/", views.MembershipView.as_view(), name="memberships"),
     path("payments/", views.PaymentView.as_view(), name="payments"),
@@ -38,6 +40,16 @@ urlpatterns = [
     path("subscription/razorpay/sync/", views.RazorpaySyncView.as_view(), name="subscription-razorpay-sync"),
     path("subscription/google-play/confirm/", views.GooglePlayConfirmView.as_view(),
          name="subscription-google-play-confirm"),
+    path("pg/dashboard/", pg_views.PgDashboardView.as_view(), name="pg-dashboard"),
+    path("pg/property/", pg_views.PgPropertyView.as_view(), name="pg-property"),
+    path("pg/rooms/", pg_views.PgRoomView.as_view(), name="pg-rooms"),
+    path("pg/tenants/", pg_views.PgTenantView.as_view(), name="pg-tenants"),
+    path("pg/tenants/action/", pg_views.PgTenantActionView.as_view(), name="pg-tenant-action"),
+    path("pg/checkout-preview/", pg_views.PgCheckoutPreviewView.as_view(), name="pg-checkout-preview"),
+    path("pg/bills/", pg_views.PgBillView.as_view(), name="pg-bills"),
+    path("pg/charges/", pg_views.PgChargeView.as_view(), name="pg-charges"),
+    path("pg/payments/", pg_views.PgPaymentView.as_view(), name="pg-payments"),
+    path("pg/deposits/", pg_views.PgDepositView.as_view(), name="pg-deposits"),
     path("webhooks/razorpay/", views.RazorpayWebhookView.as_view(), name="webhook-razorpay"),
     path("webhooks/google-play/", views.GooglePlayWebhookView.as_view(), name="webhook-google-play"),
 ]

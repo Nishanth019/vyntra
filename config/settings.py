@@ -129,6 +129,10 @@ CORS_ALLOWED_ORIGINS = os.getenv(
     "https://vyntra-web-664iy.ondigitalocean.app,"
     "http://localhost:8081,http://127.0.0.1:8081,http://localhost:8082,http://127.0.0.1:8082",
 ).split(",")
+# App builds that can run a PG say so in X-Vyntra-Features (see vyntra/pg.py).
+from corsheaders.defaults import default_headers  # noqa: E402
+
+CORS_ALLOW_HEADERS = (*default_headers, "x-vyntra-features")
 
 
 # Password validation

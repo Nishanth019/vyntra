@@ -6,11 +6,13 @@ from decimal import Decimal
 from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Q, Sum
+from django.db.models.functions import Coalesce
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
+from rest_framework.exceptions import ValidationError
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -24,6 +26,7 @@ from .models import (
     BusinessAdminDevice,
     BusinessType,
     DurationType,
+    Expense,
     GymMember,
     Member,
     MemberActivity,
@@ -33,6 +36,7 @@ from .models import (
     Notification,
     Payment,
     Staff,
+    StaffSalary,
     Subscription,
 )
 from . import member_import
@@ -50,6 +54,9 @@ from .serializers import (
     BusinessAccountQuerySerializer,
     CollectionsQuerySerializer,
     DeviceSerializer,
+    ExpenseDetailQuerySerializer,
+    ExpenseListQuerySerializer,
+    ExpenseSerializer,
     InsightsQuerySerializer,
     LoginSerializer,
     MemberActivitySerializer,
@@ -74,9 +81,13 @@ from .serializers import (
     PaymentDetailQuerySerializer,
     PaymentDetailSerializer,
     PaymentListQuerySerializer,
+    SalaryDetailQuerySerializer,
+    SalaryMonthQuerySerializer,
     SignupSerializer,
     StaffDetailQuerySerializer,
     StaffListQuerySerializer,
+    StaffSalaryCreateSerializer,
+    StaffSalarySerializer,
     StaffSerializer,
     GooglePlayConfirmSerializer,
     PlanChoiceSerializer,
@@ -98,6 +109,7 @@ from .services import (
     PaymentService,
     rupees,
 )
+from .pg import PG, PgService, client_supports_pg, is_pg
 from .subscriptions import OWNER, SubscriptionService, active_plans, hand_over_ownership
 
 
@@ -172,6 +184,8 @@ class BusinessTypeListView(APIView):
 
     def get(self, request):
         business_types = BusinessType.objects.filter(is_active=True)
+        if not client_supports_pg(request):
+            business_types = business_types.exclude(code=PG)  # older app builds only run gyms
         return Response({"results": BusinessTypeSerializer(business_types, many=True).data})
 
 
@@ -188,6 +202,8 @@ class BusinessAccountListView(APIView):
 
     def get(self, request):
         accounts = BusinessAccountService.get_accounts_for_admin(request.user)
+        if not client_supports_pg(request):
+            accounts = accounts.exclude(business_type__code=PG)  # older app builds only run gyms
         return Response(
             {"results": BusinessAccountSerializer(accounts, many=True, context={"admin": request.user}).data}
         )
@@ -205,6 +221,8 @@ class BusinessAccountListView(APIView):
                 role=OWNER,
                 is_active=True,
             )
+            if account.business_type.code == PG:
+                PgService.get_property(account.id)
 
         data = BusinessAccountSerializer(account, context={"admin": request.user}).data
         return Response(data, status=status.HTTP_201_CREATED)
@@ -632,6 +650,8 @@ class PaymentView(APIView):
         data = serializer.validated_data
         member = data.pop("member_id")
         membership = data.pop("membership_id", None)
+        if is_pg(business_account_id):
+            return Response({"detail": "Record rent from the tenant's profile."}, status=status.HTTP_400_BAD_REQUEST)
         # Default to the current plan (where dues count); once it's paid up, a waiting future plan.
         if membership is None:
             loaded = MemberService.get_members(business_account_id).get(id=member.id)
@@ -648,6 +668,8 @@ class PaymentView(APIView):
 
     def delete(self, request):
         payment = self.get_payment(request)
+        if payment.amount < 0:
+            return Response({"detail": "A refund can't be deleted."}, status=status.HTTP_400_BAD_REQUEST)
         with transaction.atomic():
             PaymentService.void(payment, request.user)
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -1354,3 +1376,156 @@ def member_import_template(request):
     response = HttpResponse(member_import.template_csv(), content_type="text/csv")
     response["Content-Disposition"] = 'attachment; filename="vyntra-members-template.csv"'
     return response
+
+
+class ExpenseView(APIView):
+    """Expenses of a business: list with totals (GET), add (POST), edit (PUT ?expense_id=), delete (DELETE)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        query = ExpenseListQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        params = query.validated_data
+        BusinessAccountService.check_admin_access(request, params["business_account_id"])
+
+        expenses = Expense.objects.filter(business_account_id=params["business_account_id"], is_active=True)
+        if params.get("date_from"):
+            expenses = expenses.filter(expense_date__gte=params["date_from"])
+        if params.get("date_to"):
+            expenses = expenses.filter(expense_date__lte=params["date_to"])
+        by_category = [
+            {"category": row["category"], "total": str(row["total"])}
+            for row in expenses.values("category").annotate(total=Sum("amount")).order_by("-total")
+        ]
+        if params.get("category"):
+            expenses = expenses.filter(category=params["category"])
+        total = expenses.aggregate(total=Coalesce(Sum("amount"), Decimal("0")))["total"]
+
+        paginator = PageNumberPagination()
+        page = paginator.paginate_queryset(expenses.order_by("-expense_date", "-id"), request, view=self)
+        response = paginator.get_paginated_response(ExpenseSerializer(page, many=True).data)
+        response.data["total"] = str(Decimal(total).quantize(Decimal("0.01")))
+        response.data["by_category"] = by_category
+        return response
+
+    def post(self, request):
+        query = BusinessAccountQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        business_account_id = query.validated_data["business_account_id"]
+        BusinessAccountService.check_admin_access(request, business_account_id)
+
+        serializer = ExpenseSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        expense = serializer.save(business_account_id=business_account_id, created_by_business_admin=request.user)
+        return Response(ExpenseSerializer(expense).data, status=status.HTTP_201_CREATED)
+
+    def put(self, request):
+        expense = self.get_expense(request)
+        serializer = ExpenseSerializer(expense, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    def delete(self, request):
+        expense = self.get_expense(request)
+        expense.is_active = False
+        expense.save()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    def get_expense(self, request):
+        query = ExpenseDetailQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        params = query.validated_data
+        BusinessAccountService.check_admin_access(request, params["business_account_id"])
+        expense = get_object_or_404(
+            Expense, id=params["expense_id"], business_account_id=params["business_account_id"], is_active=True
+        )
+        if request.method != "GET" and expense.staff_salaries.exists():
+            raise ValidationError({"detail": "This is a staff salary. Change it from Staff → Salaries."})
+        return expense
+
+
+class StaffSalaryView(APIView):
+    """
+    Salaries for a month (GET ?month=YYYY-MM): every active staff member with what was paid. Paying one (POST)
+    adds a SALARY expense; DELETE ?salary_id= undoes it.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        query = SalaryMonthQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        params = query.validated_data
+        BusinessAccountService.check_admin_access(request, params["business_account_id"])
+
+        salaries = {
+            s.staff_id: s
+            for s in StaffSalary.objects.filter(
+                business_account_id=params["business_account_id"], salary_month=params["month"]
+            )
+        }
+        staff = Staff.objects.filter(business_account_id=params["business_account_id"]).filter(
+            Q(is_active=True) | Q(id__in=salaries.keys())
+        ).order_by("first_name", "id")
+        rows = [
+            {
+                "staff": StaffSerializer(member).data,
+                "salary": StaffSalarySerializer(salaries[member.id]).data if member.id in salaries else None,
+            }
+            for member in staff
+        ]
+        paid = sum((s.amount for s in salaries.values()), Decimal("0"))
+        expected = sum((m.salary or Decimal("0") for m in staff if m.id not in salaries), Decimal("0"))
+        return Response({
+            "month": params["month"],
+            "results": rows,
+            "paid": str(paid.quantize(Decimal("0.01"))),
+            "pending": str((expected).quantize(Decimal("0.01"))),
+        })
+
+    def post(self, request):
+        query = BusinessAccountQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        business_account_id = query.validated_data["business_account_id"]
+        BusinessAccountService.check_admin_access(request, business_account_id)
+
+        serializer = StaffSalaryCreateSerializer(data=request.data, context={"business_account_id": business_account_id})
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        staff = data["staff_id"]
+        with transaction.atomic():
+            expense = Expense.objects.create(
+                business_account_id=business_account_id,
+                category="SALARY",
+                amount=data["amount"],
+                expense_date=data["paid_on"],
+                description=f"Salary: {staff} ({data['salary_month']:%b %Y})",
+                payment_method=data["payment_method"],
+                created_by_business_admin=request.user,
+            )
+            salary = StaffSalary.objects.create(
+                business_account_id=business_account_id,
+                staff=staff,
+                salary_month=data["salary_month"],
+                amount=data["amount"],
+                paid_on=data["paid_on"],
+                payment_method=data["payment_method"],
+                expense=expense,
+            )
+        return Response(StaffSalarySerializer(salary).data, status=status.HTTP_201_CREATED)
+
+    def delete(self, request):
+        query = SalaryDetailQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        params = query.validated_data
+        BusinessAccountService.check_admin_access(request, params["business_account_id"])
+        salary = get_object_or_404(StaffSalary, id=params["salary_id"], business_account_id=params["business_account_id"])
+        with transaction.atomic():
+            expense = salary.expense
+            salary.delete()
+            if expense:
+                expense.is_active = False
+                expense.save()
+        return Response(status=status.HTTP_204_NO_CONTENT)

@@ -462,7 +462,7 @@ class MembershipService:
 
 
 class PaymentService:
-    METHOD_LABELS = {"CASH": "Cash", "UPI": "UPI", "CARD": "Card", "BANK_TRANSFER": "Bank"}
+    METHOD_LABELS = {"CASH": "Cash", "UPI": "UPI", "CARD": "Card", "BANK_TRANSFER": "Bank", "DEPOSIT": "Deposit"}
 
     @classmethod
     def create(cls, member, membership, data, admin):
@@ -505,8 +505,12 @@ class PaymentService:
 
     @classmethod
     def void(cls, payment, admin):
+        from .pg import PgService
+
         payment.is_active = False
         payment.save()
+        if payment.membership_id is None:
+            PgService.undo_payment(payment)  # a PG rent payment (does nothing for gym members)
         ActivityService.log(
             payment.member,
             "PAYMENT_DELETED",
@@ -834,6 +838,11 @@ class NotificationService:
     def _morning(cls, business_account_id, today):
         if cls._sent(business_account_id, "MORNING_SUMMARY", today):
             return
+        from .pg import is_pg, pg_morning
+
+        if is_pg(business_account_id):
+            pg_morning(business_account_id, today)
+            return
         setting = cls.get_setting(business_account_id)
         members = list(MemberService.get_members(business_account_id).filter(is_active=True))
 
@@ -968,6 +977,9 @@ class NotificationService:
         present = MemberAttendance.objects.filter(business_account_id=business_account_id, attendance_date=today).count()
         if not total and not joined and not present:
             return  # a quiet day: no summary rather than "₹0 · 0 · 0"
+        from .pg import is_pg
+
+        pg = is_pg(business_account_id)
 
         message = f"Collected {rupees(total)}"
         if methods:
@@ -975,7 +987,7 @@ class NotificationService:
                 f"{PaymentService.METHOD_LABELS.get(row['payment_method'], row['payment_method'])} {rupees(row['total'])}"
                 for row in methods
             ) + ")"
-        message += f" · {joined} new member(s) · {present} check-in(s)"
+        message += f" · {joined} new tenant(s)" if pg else f" · {joined} new member(s) · {present} check-in(s)"
         cls.notify(business_account_id, "EVENING_SUMMARY", "Today's summary", message)
 
 
