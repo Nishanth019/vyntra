@@ -145,6 +145,20 @@ class OwnershipTests(SubscriptionTestCase):
         response = desk.put(f"/api/v1/admins/{self.q}&admin_id={self.admin.id}", {"is_active": False}, format="json")
         self.assertEqual(response.status_code, 400)
 
+    def test_an_admin_can_be_removed_from_the_business(self):
+        desk = self.add_admin()
+        response = self.client.delete(f"/api/v1/admins/{self.q}&admin_id={desk.id}")
+        self.assertEqual(response.status_code, 204)
+        admins = self.client.get(f"/api/v1/admins/{self.q}").data["results"]
+        self.assertNotIn(desk.id, [a["admin"]["id"] for a in admins])
+        removed = self.login_as(desk)
+        self.assertEqual(removed.get(f"/api/v1/members/{self.q}").status_code, 403)
+
+    def test_the_owner_and_yourself_cant_be_removed(self):
+        desk = self.login_as(self.add_admin())
+        self.assertEqual(desk.delete(f"/api/v1/admins/{self.q}&admin_id={self.admin.id}").status_code, 400)
+        self.assertEqual(self.client.delete(f"/api/v1/admins/{self.q}&admin_id={self.admin.id}").status_code, 400)
+
     def test_deleting_the_owners_login_hands_the_business_to_the_next_admin(self):
         desk = self.add_admin()
         self.assertEqual(self.client.delete("/api/v1/me/").status_code, 204)

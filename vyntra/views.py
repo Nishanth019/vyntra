@@ -1081,6 +1081,18 @@ class AdminView(APIView):
 
         return Response(BusinessAccountAdminSerializer(account_admin).data)
 
+    def delete(self, request):
+        """Removes an admin from this business. Their login stays, for any other businesses they're part of."""
+        account_admin = self.get_account_admin(request)
+        if account_admin.role == OWNER:
+            return Response({"detail": "The owner of the business can't be removed."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if account_admin.business_admin_id == request.user.id:
+            return Response({"detail": "You can't remove yourself. Delete your account from My Profile instead."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        account_admin.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
     def get_account_admin(self, request):
         query = AdminDetailQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
