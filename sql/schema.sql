@@ -453,7 +453,7 @@ CREATE TABLE `pg_tenancy` (
   `business_account_id` bigint unsigned NOT NULL,
   `member_id` bigint unsigned NOT NULL,
   `pg_bed_id` bigint unsigned NOT NULL,
-  `rent` decimal(12,2) NOT NULL,                             -- per billing cycle
+  `rent` decimal(12,2) NOT NULL,                             -- monthly (a bill is rent x billing_cycle_months)
   `billing_cycle_months` tinyint unsigned NOT NULL DEFAULT '1', -- 1 / 3 / 6 / 12
   `due_day` tinyint unsigned NOT NULL,                       -- 1..28
   `start_date` date NOT NULL,

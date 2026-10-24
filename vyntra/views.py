@@ -1384,6 +1384,9 @@ class ExpenseView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        if "expense_id" in request.query_params:
+            return Response(ExpenseSerializer(self.get_expense(request)).data)
+
         query = ExpenseListQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         params = query.validated_data
