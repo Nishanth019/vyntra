@@ -7,12 +7,14 @@ from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
 from django.db import transaction
 from django.db.models import Q
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.parsers import MultiPartParser
 from rest_framework.views import APIView
 
 from .models import (
@@ -33,6 +35,7 @@ from .models import (
     Staff,
     Subscription,
 )
+from . import member_import
 from .billing import GooglePlay, GooglePlayBilling, ProviderError, Razorpay, RazorpayBilling
 from .serializers import (
     AdminDetailQuerySerializer,
@@ -1307,3 +1310,47 @@ class GooglePlayWebhookView(APIView):
         except ProviderError:
             return Response(status=status.HTTP_503_SERVICE_UNAVAILABLE)  # Pub/Sub retries later
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class MemberImportView(APIView):
+    """
+    Upload an .xlsx or .csv of members. With ?dry_run=true it only checks the rows and reports problems;
+    without it, the rows that pass are imported and the rest are reported back.
+    """
+
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser]
+
+    def post(self, request):
+        query = BusinessAccountQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        business_account_id = query.validated_data["business_account_id"]
+        BusinessAccountService.check_admin_access(request, business_account_id)
+
+        upload = request.FILES.get("file")
+        if upload is None:
+            return Response({"file": ["Choose a file to import."]}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            rows = member_import.read_rows(upload)
+        except member_import.ImportFileError as error:
+            return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
+
+        results = member_import.check_rows(business_account_id, rows)
+        dry_run = request.query_params.get("dry_run") in ("1", "true", "yes")
+        created = 0 if dry_run else member_import.import_rows(business_account_id, request.user, results)
+        return Response({
+            "dry_run": dry_run,
+            "total": len(results),
+            "ok": sum(1 for r in results if r["ok"]),
+            "created": created,
+            "rows": [
+                {key: r[key] for key in ("row", "ok", "errors", "member_code", "name", "plan")} for r in results
+            ],
+        })
+
+
+def member_import_template(request):
+    """The CSV template the app offers for download (headings plus one example row)."""
+    response = HttpResponse(member_import.template_csv(), content_type="text/csv")
+    response["Content-Disposition"] = 'attachment; filename="vyntra-members-template.csv"'
+    return response
