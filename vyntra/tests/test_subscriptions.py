@@ -5,12 +5,14 @@ import json
 from datetime import timedelta
 from unittest import mock
 
+from django.contrib import messages
+from django.contrib.admin import site as admin_site
 from django.contrib.auth.hashers import make_password
-from django.test import override_settings
+from django.test import RequestFactory, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from vyntra.billing import GooglePlay, Razorpay
+from vyntra.billing import GooglePlay, ProviderError, Razorpay
 from vyntra.models import (
     BusinessAccountAdmin,
     BusinessAdmin,
@@ -229,6 +231,42 @@ class RazorpayTests(SubscriptionTestCase):
         self.webhook("subscription.halted", self.razorpay_subscription(status="halted"))
         self.assertEqual(self.subscription.status, Subscription.EXPIRED)
         self.assertFalse(self.subscription.auto_renew)
+
+    def save_in_django_admin(self, plan, **changes):
+        for field, value in changes.items():
+            setattr(plan, field, value)
+        model_admin = admin_site._registry[SubscriptionPlan]
+        with mock.patch.object(model_admin, "message_user") as message:
+            model_admin.save_model(RequestFactory().post("/"), plan, form=None, change=True)
+        plan.refresh_from_db()
+        return message
+
+    def test_changing_the_price_in_django_admin_creates_a_new_razorpay_plan(self):
+        with mock.patch.object(Razorpay, "_request", return_value={"id": "plan_m2"}) as request:
+            self.save_in_django_admin(self.monthly_plan, price=599)
+        self.assertEqual(self.monthly_plan.razorpay_plan_id, "plan_m2")
+        self.assertEqual(request.call_args.args[2]["item"]["amount"], 59900)
+
+        with mock.patch.object(Razorpay, "_request") as request:
+            self.save_in_django_admin(self.monthly_plan, name="Monthly plan")
+        request.assert_not_called()
+        self.assertEqual(self.monthly_plan.razorpay_plan_id, "plan_m2")
+
+    def test_a_refused_razorpay_plan_turns_off_payment_instead_of_charging_the_old_price(self):
+        with mock.patch.object(Razorpay, "_request", side_effect=ProviderError("bad")):
+            message = self.save_in_django_admin(self.monthly_plan, price=599)
+        self.assertIsNone(self.monthly_plan.razorpay_plan_id)
+        self.assertEqual(self.monthly_plan.price, 599)
+        self.assertEqual(message.call_args.args[2], messages.ERROR)
+
+    def test_renewals_on_the_old_razorpay_plan_still_count_after_a_price_change(self):
+        self.monthly_plan.razorpay_plan_id = "plan_m2"
+        self.monthly_plan.save()
+        old_plan_renewal = {**self.razorpay_subscription(), "notes": {
+            "business_admin_id": str(self.admin.id), "plan_code": "MONTHLY"}}
+        self.webhook("subscription.charged", old_plan_renewal, self.payment())
+        self.assertEqual(self.subscription.provider, Subscription.RAZORPAY)
+        self.assertEqual(self.subscription.plan, self.monthly_plan)
 
     def test_cancel_keeps_the_paid_days(self):
         self.webhook("subscription.charged", self.razorpay_subscription(), self.payment())

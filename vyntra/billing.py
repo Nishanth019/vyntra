@@ -201,7 +201,12 @@ class RazorpayBilling:
     def apply(cls, entity, payment=None):
         """A Razorpay subscription is paid up to `current_end`."""
         admin = cls._owner(entity)
-        plan = SubscriptionPlan.objects.filter(razorpay_plan_id=entity.get("plan_id")).first()
+        # A price change links the plan to a new Razorpay plan, but existing subscribers keep renewing on the old
+        # one; the plan code saved on the subscription still finds them.
+        plan = (
+            SubscriptionPlan.objects.filter(razorpay_plan_id=entity.get("plan_id")).first()
+            or SubscriptionPlan.objects.filter(code=entity.get("notes", {}).get("plan_code") or None).first()
+        )
         if admin is None or plan is None:
             logger.warning("Razorpay subscription %s has no matching login or plan", entity.get("id"))
             return None

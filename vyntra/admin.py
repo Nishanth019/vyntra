@@ -257,6 +257,30 @@ class SubscriptionPlanAdmin(BaseAdmin):
     ordering = ("sort_order", "id")
     actions = ("create_razorpay_plans",)
 
+    # Razorpay plans can't be edited, so a new price needs a new Razorpay plan. Existing subscribers stay on their
+    # old plan and price; new subscribers get the new one.
+    BILLING_FIELDS = ("price", "months", "currency")
+
+    def save_model(self, request, obj, form, change):
+        before = SubscriptionPlan.objects.filter(pk=obj.pk).first() if change else None
+        billing_changed = before is None or any(
+            getattr(before, field) != getattr(obj, field) for field in self.BILLING_FIELDS
+        )
+        if billing_changed and Razorpay.is_configured():
+            try:
+                obj.razorpay_plan_id = Razorpay.create_plan(obj)
+                self.message_user(request, f"{obj.name}: new Razorpay plan {obj.razorpay_plan_id} at {obj.price}.")
+            except ProviderError as error:
+                # Never leave the old Razorpay plan linked: it would charge the old price.
+                obj.razorpay_plan_id = None
+                self.message_user(
+                    request,
+                    f"{obj.name}: saved, but Razorpay refused the new plan ({error}). Online payment for this plan "
+                    "is off until you run “Create the selected plans in Razorpay”.",
+                    messages.ERROR,
+                )
+        super().save_model(request, obj, form, change)
+
     @admin.action(description="Create the selected plans in Razorpay (needs Razorpay keys)")
     def create_razorpay_plans(self, request, queryset):
         if not Razorpay.is_configured():
