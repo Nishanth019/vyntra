@@ -525,7 +525,7 @@ class NotificationSetting(TimeStampedModel):
 
 
 class SubscriptionPlan(TimeStampedModel):
-    """What Vyntra sells: Monthly / Quarterly / Yearly access for one login and the businesses it owns."""
+    """What Manaze sells: Monthly / Quarterly / Yearly access for one login and the businesses it owns."""
 
     code = models.CharField(max_length=30, unique=True)
     name = models.CharField(max_length=100)

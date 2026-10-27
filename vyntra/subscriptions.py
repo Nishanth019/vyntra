@@ -1,5 +1,5 @@
 """
-Vyntra's own subscription: a 15-day free trial per login, then a paid plan.
+Manaze's own subscription: a 15-day free trial per login, then a paid plan.
 
 A business account follows the subscription of its OWNER (the login that created it). While the owner
 has access, every admin of that business can work normally; once it ends, the business is read-only.

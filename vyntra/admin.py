@@ -33,8 +33,8 @@ from .models import (
 from .billing import ProviderError, Razorpay
 from .subscriptions import SubscriptionService
 
-admin.site.site_header = "Vyntra Admin"
-admin.site.site_title = "Vyntra Admin"
+admin.site.site_header = "Manaze Admin"
+admin.site.site_title = "Manaze Admin"
 admin.site.index_title = "All tables"
 
 
@@ -247,7 +247,7 @@ class BusinessAdminDeviceAdmin(BaseAdmin):
     exclude = ("push_token",)
 
 
-# --- Vyntra subscriptions ----------------------------------------------------------------------
+# --- Manaze subscriptions ----------------------------------------------------------------------
 
 
 @admin.register(SubscriptionPlan)

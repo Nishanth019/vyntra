@@ -1,5 +1,5 @@
 """
-Payment providers for Vyntra subscriptions.
+Payment providers for Manaze subscriptions.
 
 - Razorpay Subscriptions on the website (UPI AutoPay, cards, net banking).
 - Google Play Billing in the Android app (Google requires it for in-app digital subscriptions).
@@ -91,7 +91,7 @@ class Razorpay:
             "period": period,
             "interval": interval,
             "item": {
-                "name": f"Vyntra {plan.name}",
+                "name": f"Manaze {plan.name}",
                 "amount": int(plan.price * 100),
                 "currency": plan.currency,
             },
@@ -144,7 +144,7 @@ class Razorpay:
 
 
 class RazorpayBilling:
-    """Turns Razorpay subscription and payment entities into Vyntra subscription changes."""
+    """Turns Razorpay subscription and payment entities into Manaze subscription changes."""
 
     @classmethod
     def start_checkout(cls, admin, plan):
@@ -332,7 +332,7 @@ class GooglePlay:
 
 
 class GooglePlayBilling:
-    """Turns Google Play subscription purchases into Vyntra subscription changes."""
+    """Turns Google Play subscription purchases into Manaze subscription changes."""
 
     ACTIVE_STATES = ("SUBSCRIPTION_STATE_ACTIVE", "SUBSCRIPTION_STATE_IN_GRACE_PERIOD")
     ENDED_STATES = ("SUBSCRIPTION_STATE_ON_HOLD", "SUBSCRIPTION_STATE_PAUSED", "SUBSCRIPTION_STATE_EXPIRED")

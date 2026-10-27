@@ -1,5 +1,5 @@
 """
-Printable receipts for Vyntra subscription payments.
+Printable receipts for Manaze subscription payments.
 
 The app and website open a receipt in a browser, which can't send the login token, so each receipt link carries a
 signed token for that one payment instead.

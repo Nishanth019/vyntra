@@ -1,5 +1,5 @@
 """
-Import members from an Excel (.xlsx) or CSV file, so a gym can move its register into Vyntra in one go.
+Import members from an Excel (.xlsx) or CSV file, so a gym can move its register into Manaze in one go.
 
 Each row becomes a member on one of the gym's plans, optionally with what they've paid. The app first sends the
 file with `dry_run` to show which rows are fine and what's wrong with the rest, then imports the good rows.

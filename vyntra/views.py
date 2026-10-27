@@ -1374,7 +1374,7 @@ class MemberImportView(APIView):
 def member_import_template(request):
     """The CSV template the app offers for download (headings plus one example row)."""
     response = HttpResponse(member_import.template_csv(), content_type="text/csv")
-    response["Content-Disposition"] = 'attachment; filename="vyntra-members-template.csv"'
+    response["Content-Disposition"] = 'attachment; filename="manaze-members-template.csv"'
     return response
 
 

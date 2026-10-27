@@ -191,7 +191,7 @@ CRON_SECRET = os.getenv("CRON_SECRET", "")
 TEST_RUNNER = "config.test_runner.VyntraTestRunner"
 
 
-# Vyntra subscriptions. Payments stay switched off until these are set in the environment.
+# Manaze subscriptions. Payments stay switched off until these are set in the environment.
 # Razorpay (website): Dashboard → Account & Settings → API Keys, and Webhooks.
 RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "")
 RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "")
