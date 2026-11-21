@@ -712,6 +712,7 @@ class InsightsService:
 
 class NotificationService:
     EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
+    ALL_CLEAR = "All clear: nothing needs your attention today."
 
     @classmethod
     def get_setting(cls, business_account_id):
@@ -950,9 +951,10 @@ class NotificationService:
                 business_admin=admin,
                 notification_type="MORNING_SUMMARY",
                 title="Good morning! Today at your gym",
-                message=" · ".join(parts) if parts else "All clear: nothing needs your attention today.",
+                message=" · ".join(parts) if parts else cls.ALL_CLEAR,
                 notification_date=today,
-                is_read=not setting.morning_summary,
+                # Nothing to report: kept only so the job runs once a day, never shown (see NotificationView).
+                is_read=not setting.morning_summary or not parts,
             )
             for admin in BusinessAccountService.get_admins(business_account_id)
         )

@@ -19,6 +19,14 @@ class DailyJobTests(ApiTestCase):
             Notification.objects.filter(business_account=self.account, notification_type="MORNING_SUMMARY").count(), 1
         )
 
+    def test_all_clear_morning_runs_once_but_is_not_shown(self):
+        self.run_job("morning")
+        self.run_job("morning")
+        summary = Notification.objects.get(business_account=self.account, notification_type="MORNING_SUMMARY")
+        self.assertTrue(summary.is_read)
+        response = self.client.get(f"/api/v1/notifications/?business_account_id={self.account.id}")
+        self.assertEqual(response.data["count"], 0)
+
     def test_member_waiting_for_a_future_plan_is_not_moved_to_inactive(self):
         m = self.add_member(days(-26))
         self.action(m, "renew_early", start_date=days(30))

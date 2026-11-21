@@ -126,7 +126,7 @@ JWT_COOKIE_SAMESITE = "Lax"
 CORS_ALLOWED_ORIGINS = os.getenv(
     "CORS_ALLOWED_ORIGINS",
     # The website (DigitalOcean static site) and local Expo web.
-    "https://vyntra-web-664iy.ondigitalocean.app,"
+    "https://vyntra-web-664iy.ondigitalocean.app,https://app.manaze.online,"
     "http://localhost:8081,http://127.0.0.1:8081,http://localhost:8082,http://127.0.0.1:8082",
 ).split(",")
 # App builds that can run a PG say so in X-Vyntra-Features (see vyntra/pg.py).
@@ -205,5 +205,5 @@ GOOGLE_PLAY_RTDN_TOKEN = os.getenv("GOOGLE_PLAY_RTDN_TOKEN", "")
 
 # Public site: where "Start free trial" / "Log in" go, and the WhatsApp number for the chat button (digits with
 # country code).
-WEB_APP_URL = os.getenv("WEB_APP_URL", "https://vyntra-web-664iy.ondigitalocean.app")
+WEB_APP_URL = os.getenv("WEB_APP_URL", "https://app.manaze.online")
 SUPPORT_WHATSAPP = os.getenv("SUPPORT_WHATSAPP", "919121418845")

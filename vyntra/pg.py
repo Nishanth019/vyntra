@@ -730,8 +730,8 @@ def pg_morning(business_account_id, today):
     Notification.objects.bulk_create(
         Notification(
             business_account_id=business_account_id, business_admin=admin, notification_type="MORNING_SUMMARY",
-            title=title, message=" · ".join(parts) if parts else "All clear: nothing needs your attention today.",
-            notification_date=today, is_read=not setting.morning_summary,
+            title=title, message=" · ".join(parts) if parts else NotificationService.ALL_CLEAR,
+            notification_date=today, is_read=not setting.morning_summary or not parts,
         )
         for admin in admins
     )

@@ -886,6 +886,8 @@ class DashboardView(APIView):
             "plans": MembershipPlan.objects.filter(business_account_id=business_account_id, is_active=True).count(),
             "unread_notifications": Notification.objects.filter(
                 business_account_id=business_account_id, business_admin=request.user, is_read=False
+            ).exclude(
+                notification_type="MORNING_SUMMARY", message=NotificationService.ALL_CLEAR
             ).count(),
         })
 
@@ -917,6 +919,8 @@ class NotificationView(APIView):
 
         notifications = Notification.objects.filter(
             business_account_id=business_account_id, business_admin=request.user
+        ).exclude(  # "All clear" mornings only mark the daily job as done; they aren't news.
+            notification_type="MORNING_SUMMARY", message=NotificationService.ALL_CLEAR
         ).order_by("-created_at", "-id")
         paginator = PageNumberPagination()
         page = paginator.paginate_queryset(notifications, request, view=self)
