@@ -16,6 +16,7 @@ from .models import (
     BusinessAdminDevice,
     BusinessType,
     DurationType,
+    Expense,
     GymMember,
     Member,
     MemberActivity,
@@ -25,7 +26,16 @@ from .models import (
     Notification,
     NotificationSetting,
     Payment,
+    PgBed,
+    PgBill,
+    PgBillItem,
+    PgDepositEntry,
+    PgProperty,
+    PgRoom,
+    PgTenancy,
+    PgTenant,
     Staff,
+    StaffSalary,
     Subscription,
     SubscriptionPayment,
     SubscriptionPlan,
@@ -378,3 +388,117 @@ class SubscriptionPaymentAdmin(BaseAdmin):
     list_select_related = ("subscription__business_admin", "plan")
     raw_id_fields = ("subscription",)
     date_hierarchy = "paid_at"
+
+
+# --- Expenses and staff salaries ---------------------------------------------------------------
+
+
+@admin.register(Expense)
+class ExpenseAdmin(BaseAdmin):
+    list_display = ("id", "business_account", "category", "amount", "expense_date", "description", "is_active")
+    list_filter = ("category", "is_active", "business_account")
+    search_fields = ("description", "vendor")
+    list_select_related = ("business_account",)
+    raw_id_fields = ("business_account", "created_by_business_admin")
+    date_hierarchy = "expense_date"
+
+
+@admin.register(StaffSalary)
+class StaffSalaryAdmin(BaseAdmin):
+    list_display = ("id", "business_account", "staff", "salary_month", "amount", "paid_on")
+    list_filter = ("business_account",)
+    list_select_related = ("business_account", "staff")
+    raw_id_fields = ("business_account", "staff", "expense")
+
+
+# --- PG / hostel -------------------------------------------------------------------------------
+
+
+class PgPlainAdmin(admin.ModelAdmin):
+    """For PG tables that only have created_at (no updated_at)."""
+
+    list_per_page = 50
+    readonly_fields = ("created_at",)
+    ordering = ("-id",)
+
+
+@admin.register(PgProperty)
+class PgPropertyAdmin(BaseAdmin):
+    list_display = ("id", "business_account", "property_type", "gender", "default_due_day", "prorate_first_bill")
+    list_filter = ("property_type", "gender")
+    list_select_related = ("business_account",)
+    raw_id_fields = ("business_account",)
+
+
+@admin.register(PgRoom)
+class PgRoomAdmin(BaseAdmin):
+    list_display = ("id", "business_account", "room_number", "floor", "is_ac", "rent_per_bed", "is_active")
+    list_filter = ("is_active", "is_ac", "business_account")
+    search_fields = ("room_number",)
+    list_select_related = ("business_account",)
+    raw_id_fields = ("business_account",)
+
+
+@admin.register(PgBed)
+class PgBedAdmin(BaseAdmin):
+    list_display = ("id", "business_account", "room", "label", "is_active")
+    list_filter = ("is_active", "business_account")
+    list_select_related = ("business_account", "room")
+    raw_id_fields = ("business_account", "room")
+
+
+@admin.register(PgTenant)
+class PgTenantAdmin(BaseAdmin):
+    list_display = ("id", "member", "occupation", "id_type", "emergency_contact_name", "vehicle_number")
+    search_fields = ("member__first_name", "member__last_name", "member__phone")
+    list_select_related = ("member",)
+    raw_id_fields = ("member",)
+
+
+class PgBillInline(admin.TabularInline):
+    model = PgBill
+    extra = 0
+    fields = ("period_start", "period_end", "due_date", "total", "discount", "paid", "status")
+    show_change_link = True
+
+
+@admin.register(PgTenancy)
+class PgTenancyAdmin(BaseAdmin):
+    list_display = ("id", "business_account", "member", "bed", "rent", "due_day", "start_date", "end_date", "status")
+    list_filter = ("status", "business_account")
+    search_fields = ("member__first_name", "member__last_name")
+    list_select_related = ("business_account", "member", "bed__room")
+    raw_id_fields = ("business_account", "member", "bed", "created_by_business_admin")
+    inlines = [PgBillInline]
+
+
+class PgBillItemInline(admin.TabularInline):
+    model = PgBillItem
+    extra = 0
+    readonly_fields = ("created_at",)
+
+
+@admin.register(PgBill)
+class PgBillAdmin(BaseAdmin):
+    list_display = ("id", "business_account", "member", "period_start", "period_end", "due_date", "total", "discount", "paid", "status")
+    list_filter = ("status", "business_account")
+    search_fields = ("member__first_name", "member__last_name")
+    list_select_related = ("business_account", "member")
+    raw_id_fields = ("business_account", "tenancy", "member")
+    date_hierarchy = "period_start"
+    inlines = [PgBillItemInline]
+
+
+@admin.register(PgBillItem)
+class PgBillItemAdmin(PgPlainAdmin):
+    list_display = ("id", "bill", "item_type", "description", "amount", "created_at")
+    list_filter = ("item_type",)
+    raw_id_fields = ("bill",)
+
+
+@admin.register(PgDepositEntry)
+class PgDepositEntryAdmin(PgPlainAdmin):
+    list_display = ("id", "business_account", "tenancy", "entry_type", "amount", "entry_date", "payment_method")
+    list_filter = ("entry_type", "business_account")
+    list_select_related = ("business_account", "tenancy__member")
+    raw_id_fields = ("business_account", "tenancy", "created_by_business_admin")
