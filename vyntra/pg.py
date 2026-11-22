@@ -482,8 +482,8 @@ class PgService:
     def mark_paid_before(cls, tenancy, paid_until, admin):
         """
         For a tenant who lived here before the owner started using Manaze: the rent of every bill starting on or
-        before `paid_until` is marked paid. No payment rows are made, so it isn't counted as money received now.
-        Charges on those bills stay due.
+        before `paid_until` is taken off with a "Rent paid before Manaze" line. No payment rows are made, so it
+        isn't counted as money received, and it never becomes advance or a refund. Charges on those bills stay due.
         """
         covered = Decimal("0")
         last = None
@@ -492,9 +492,11 @@ class PgService:
             rent = sum((i.amount for i in bill.items.all() if i.item_type == PgBillItem.RENT), Decimal("0"))
             portion = min(rent, max(bill.balance, Decimal("0")))
             if portion > 0:
-                bill.paid += portion
-                bill.status = bill_status(bill)
-                bill.save()
+                PgBillItem.objects.create(
+                    bill=bill, item_type=PgBillItem.ADJUSTMENT, description="Rent paid before Manaze", amount=-portion
+                )
+                bill.total -= portion
+                cls.save_bill(bill)
                 covered += portion
                 last = bill
         if last is not None:

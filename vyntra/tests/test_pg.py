@@ -127,9 +127,13 @@ class BillTests(PgTestCase):
         tenant = self.add_tenant(start, rent_paid_until=str(paid_until),
                                  charges=[{"description": "Key", "amount": "300"}])
         # Newest first: this month's bill is due, the oldest keeps its charge due.
-        self.assertEqual([b["status"] for b in tenant["bills"]], ["UNPAID", "PAID", "PAID", "PARTIAL"])
+        self.assertEqual([b["status"] for b in tenant["bills"]], ["UNPAID", "PAID", "PAID", "UNPAID"])
         self.assertEqual(tenant["total_due"], "5300.00")  # this month's rent + the charge on the first bill
         self.assertFalse(Payment.objects.filter(member_id=tenant["id"]).exists())
+        paid_before = tenant["bills"][1]
+        self.assertEqual(paid_before["total"], "0.00")
+        self.assertEqual(paid_before["items"][-1]["description"], "Rent paid before Manaze")
+        self.assertEqual(paid_before["items"][-1]["amount"], "-5000.00")
         self.assertTrue(MemberActivity.objects.filter(member_id=tenant["id"], activity_type="RENT_PAID_BEFORE").exists())
 
     def test_rent_paid_until_cant_be_before_moving_in(self):
