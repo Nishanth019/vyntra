@@ -171,6 +171,8 @@ class StayTermsSerializer(serializers.Serializer):
     billing_cycle_months = serializers.ChoiceField(choices=[1, 3, 6, 12], required=False)
     due_day = serializers.IntegerField(min_value=1, max_value=28, required=False)
     start_date = serializers.DateField(required=False)
+    # Existing tenant joining Manaze: rent of bills starting on or before this date was already paid.
+    rent_paid_until = serializers.DateField(required=False, allow_null=True)
     prorate_first_bill = serializers.BooleanField(required=False)
     deposit_amount = serializers.DecimalField(**MONEY, min_value=0, required=False)
     deposit_paid = serializers.DecimalField(**MONEY, min_value=0, required=False)
@@ -188,6 +190,9 @@ class StayTermsSerializer(serializers.Serializer):
     def validate(self, attrs):
         if attrs.get("deposit_paid") and attrs["deposit_paid"] > attrs.get("deposit_amount", Decimal("0")):
             raise serializers.ValidationError({"deposit_paid": "Deposit paid can't be more than the deposit."})
+        paid_until = attrs.get("rent_paid_until")
+        if paid_until and paid_until < attrs.get("start_date", timezone.localdate()):
+            raise serializers.ValidationError({"rent_paid_until": "Can't be before the move-in date."})
         return attrs
 
 
@@ -217,7 +222,8 @@ class PgTenantWriteSerializer(StayTermsSerializer):
         super().__init__(*args, **kwargs)
         if self.partial:
             # Editing: the bed changes through Shift, the first bill and payments are already done.
-            for name in ["bed_id", "start_date", "prorate_first_bill", "deposit_paid", "charges", "payment"]:
+            for name in ["bed_id", "start_date", "rent_paid_until", "prorate_first_bill", "deposit_paid", "charges",
+                         "payment"]:
                 self.fields.pop(name)
 
     def validate_member_code(self, value):

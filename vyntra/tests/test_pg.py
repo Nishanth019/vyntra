@@ -6,6 +6,7 @@ from vyntra.models import (
     BusinessAccountAdmin,
     BusinessType,
     Expense,
+    MemberActivity,
     Notification,
     Payment,
     PgBill,
@@ -119,6 +120,33 @@ class BillTests(PgTestCase):
         self.assertEqual(len(tenant["bills"]), 3)
         self.assertEqual(tenant["total_due"], "15000.00")
         self.assertEqual(tenant["tenancy"]["due_day"], min(start.day, 28))
+
+    def test_rent_paid_before_manaze_isnt_due_or_income(self):
+        start = add_months(days(0), -3)
+        paid_until = add_months(days(0), -1)  # inside last month's bill: it and the older ones are paid
+        tenant = self.add_tenant(start, rent_paid_until=str(paid_until),
+                                 charges=[{"description": "Key", "amount": "300"}])
+        # Newest first: this month's bill is due, the oldest keeps its charge due.
+        self.assertEqual([b["status"] for b in tenant["bills"]], ["UNPAID", "PAID", "PAID", "PARTIAL"])
+        self.assertEqual(tenant["total_due"], "5300.00")  # this month's rent + the charge on the first bill
+        self.assertFalse(Payment.objects.filter(member_id=tenant["id"]).exists())
+        self.assertTrue(MemberActivity.objects.filter(member_id=tenant["id"], activity_type="RENT_PAID_BEFORE").exists())
+
+    def test_rent_paid_until_cant_be_before_moving_in(self):
+        response = self.client.post(f"/api/v1/pg/tenants/{self.p}", {
+            "first_name": "B", "phone": "9123456780", "bed_id": self.bed1, "start_date": str(days(-10)),
+            "rent_paid_until": str(days(-20)),
+        }, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("rent_paid_until", response.data)
+
+    def test_moving_back_in_with_rent_paid_before(self):
+        tenant = self.add_tenant(days(-40))
+        self.action(tenant["id"], "checkout", leave_date=days(-35))
+        tenant = self.action(tenant["id"], "move_in", bed_id=self.bed2, start_date=str(add_months(days(0), -2)),
+                             rent_paid_until=str(days(0)))
+        stay = PgTenancy.objects.get(member_id=tenant["id"], status="ACTIVE")
+        self.assertEqual({b.status for b in stay.bills.all()}, {"PAID"})
 
     def test_payments_pay_the_oldest_bill_first_and_keep_the_rest_as_advance(self):
         tenant = self.add_tenant(add_months(days(0), -1))

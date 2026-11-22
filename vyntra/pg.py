@@ -467,6 +467,8 @@ class PgService:
             f"Moved in to {bed} on {start_date:%d %b %Y}, rent {rupees(tenancy.rent)}/month, due on day {tenancy.due_day}",
             admin,
         )
+        if data.get("rent_paid_until"):
+            cls.mark_paid_before(tenancy, data["rent_paid_until"], admin)
         if data.get("deposit_paid"):
             cls.deposit_entry(
                 tenancy, PgDepositEntry.COLLECT, data["deposit_paid"], admin,
@@ -475,6 +477,33 @@ class PgService:
         if data.get("payment"):
             cls.record_payment(tenancy, data["payment"], admin, bill=bill)
         return tenancy
+
+    @classmethod
+    def mark_paid_before(cls, tenancy, paid_until, admin):
+        """
+        For a tenant who lived here before the owner started using Manaze: the rent of every bill starting on or
+        before `paid_until` is marked paid. No payment rows are made, so it isn't counted as money received now.
+        Charges on those bills stay due.
+        """
+        covered = Decimal("0")
+        last = None
+        bills = tenancy.bills.exclude(status=PgBill.VOID).filter(period_start__lte=paid_until).order_by("period_start")
+        for bill in bills:
+            rent = sum((i.amount for i in bill.items.all() if i.item_type == PgBillItem.RENT), Decimal("0"))
+            portion = min(rent, max(bill.balance, Decimal("0")))
+            if portion > 0:
+                bill.paid += portion
+                bill.status = bill_status(bill)
+                bill.save()
+                covered += portion
+                last = bill
+        if last is not None:
+            ActivityService.log(
+                tenancy.member, "RENT_PAID_BEFORE",
+                f"Rent up to {last.period_end:%d %b %Y} marked as paid before Manaze ({rupees(covered)}, "
+                "not counted as money received)",
+                admin,
+            )
 
     @classmethod
     def shift(cls, tenancy, bed, admin, rent=None):
